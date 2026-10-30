@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Casa Hub</title>
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Casa Hub">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;700&family=Josefin+Sans:wght@300;400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="app.js" defer></script>
+</head>
+<body>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<nav class="topbar">
+    <button class="section-tab" id="tabTasks" onclick="setSection('tasks')">Impegni <span class="tab-badge" id="badgeTasks"></span></button>
+    <button class="section-tab" id="tabShop" onclick="setSection('shop')">Spesa <span class="tab-badge" id="badgeShop"></span></button>
+    <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Tema chiaro/scuro">○</button>
+    <button class="sync-btn" id="syncBtn" onclick="openSyncModal()" title="Sincronizzazione e backup">
+        <span id="syncDot" class="sync-status-dot"></span><span id="syncLabel">Sync</span>
+    </button>
+</nav>
+
+<main id="appContent" class="container"></main>
+<button class="fab hidden" id="fabAdd" onclick="openTaskModal()" title="Nuovo impegno" aria-label="Nuovo impegno">+</button>
+
+<!-- Nuovo / modifica impegno -->
+<div id="modalTask" class="modal-overlay hidden"><div class="modal-card">
+    <div class="modal-title" id="taskModalTitle">Nuovo impegno</div>
+    <input type="text" id="tTitle" placeholder="Cosa c'è da fare?" maxlength="140" autocomplete="off">
+    <div class="field-row">
+        <select class="styled-select" id="tCat" onchange="fillSubSelect()" aria-label="Categoria"></select>
+        <select class="styled-select" id="tSub" aria-label="Sottocategoria"></select>
+    </div>
+    <div class="field-label">Urgenza</div>
+    <div class="triage-box" id="tUrg"></div>
+    <div class="field-label">Quando</div>
+    <div class="chip-row">
+        <button type="button" class="chip" onclick="setTaskDateQuick(0)">Oggi</button>
+        <button type="button" class="chip" onclick="setTaskDateQuick(1)">Domani</button>
+        <button type="button" class="chip" onclick="setTaskDateQuick(7)">Tra una settimana</button>
+        <button type="button" class="chip" onclick="setTaskDateQuick(null)">Senza data</button>
+    </div>
+    <div class="field-row">
+        <input type="date" id="tDate" aria-label="Data" onchange="updateRecUI()">
+        <input type="time" id="tTime" aria-label="Ora (opzionale)">
+    </div>
+    <div class="field-label">Ripetizione</div>
+    <div class="field-row">
+        <select class="styled-select" id="tRecUnit" onchange="updateRecUI()" aria-label="Ripetizione">
+            <option value="">Non si ripete</option>
+            <option value="day">Ogni … giorni</option>
+            <option value="week">Ogni … settimane</option>
+            <option value="month">Ogni … mesi</option>
+            <option value="year">Ogni … anni</option>
+        </select>
+        <input type="number" id="tRecEvery" class="narrow" min="1" max="99" value="1" inputmode="numeric" oninput="updateRecUI()" aria-label="Ogni quanti">
+    </div>
+    <div class="chip-row" id="tRecDays"></div>
+    <label class="check-row" id="tRecFromDoneRow"><input type="checkbox" id="tRecFromDone" onchange="updateRecUI()"> Conta dal giorno in cui lo completo</label>
+    <div class="hint" id="tRecHint"></div>
+    <textarea id="tNotes" placeholder="Note (opzionale)"></textarea>
+    <div class="modal-btns">
+        <button class="btn btn-primary" onclick="saveTask()">Salva</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalTask')">Annulla</button>
+    </div>
+    <button class="btn btn-danger-ghost hidden" id="tDeleteBtn" onclick="deleteTaskFromModal()">Elimina impegno</button>
+</div></div>
+
+<!-- Contenitori dinamici -->
+<div id="modalSheet" class="modal-overlay hidden"><div class="modal-card" id="sheetBody"></div></div>
+<div id="modalImprevisto" class="modal-overlay hidden"><div class="modal-card" id="imprevistoBody"></div></div>
+<div id="modalCats" class="modal-overlay hidden"><div class="modal-card">
+    <div class="modal-title">Categorie</div>
+    <div id="catsBody"></div>
+    <button class="btn btn-secondary" onclick="closeModal('modalCats')">Fatto</button>
+</div></div>
+
+<!-- Prodotto della spesa -->
+<div id="modalShopItem" class="modal-overlay hidden"><div class="modal-card">
+    <div class="modal-title">Prodotto</div>
+    <input type="text" id="siName" placeholder="Nome prodotto" maxlength="80" data-enter="saveShopItem">
+    <input type="text" id="siQty" placeholder="Quantità o nota (es. 1 kg, senza lattosio)" maxlength="60" data-enter="saveShopItem">
+    <select class="styled-select" id="siCat" aria-label="Reparto"></select>
+    <label class="check-row"><input type="checkbox" id="siNeed"> Da comprare</label>
+    <div class="modal-btns">
+        <button class="btn btn-primary" onclick="saveShopItem()">Salva</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalShopItem')">Annulla</button>
+    </div>
+    <button class="btn btn-danger-ghost" onclick="deleteShopItem()">Elimina dal catalogo</button>
+</div></div>
+
+<div id="modalShopCats" class="modal-overlay hidden"><div class="modal-card">
+    <div class="modal-title">Reparti</div>
+    <p class="confirm-msg" style="margin-bottom:6px;">Metti i reparti nell'ordine del tuo supermercato: la lista stampata li segue.</p>
+    <div id="shopCatsBody"></div>
+    <button class="btn btn-secondary" onclick="closeModal('modalShopCats')">Fatto</button>
+</div></div>
+
+<div id="modalDoc" class="modal-overlay hidden"><div class="modal-card" id="docBody"></div></div>
+<div id="modalSync" class="modal-overlay hidden"><div class="modal-card">
+    <div class="modal-title">Sync e backup</div>
+    <div id="syncModalBody"></div>
+</div></div>
+
+<!-- Conferma generica: resta ultimo, così compare sopra gli altri modali -->
+<div id="modalConfirm" class="modal-overlay hidden"><div class="modal-card" style="text-align:center;">
+    <div class="modal-title" id="confirmTitle" style="color:var(--danger);">Eliminare?</div>
+    <p class="confirm-msg" id="confirmMsg">Questa azione non è reversibile.</p>
+    <div class="modal-btns">
+        <button class="btn btn-danger-solid" id="confirmOkBtn">Elimina</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalConfirm')">Annulla</button>
+    </div>
+</div></div>
+
+<input type="file" id="importFileInput" accept=".json,application/json" onchange="handleImport(event)">
+<div id="printArea" aria-hidden="true"></div>
+</body>
+</html>
