@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  CASA HUB — app.js (v1.0)
-//  Impegni di casa (urgenza, categorie, ricorrenze, rinvii) + lista della spesa
+//  CASA HUB — app.js (v1.1)
+//  Impegni di casa (urgenza, categorie, ricorrenze, rinvii), energie con la
+//  teoria dei cucchiaini, lista della spesa
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── Costanti ────────────────────────────────────────────────────────────────
@@ -18,8 +19,9 @@ const MONTHS_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Lugl
 const ISO_DOW_LABELS = { 1:'Lun', 2:'Mar', 3:'Mer', 4:'Gio', 5:'Ven', 6:'Sab', 7:'Dom' };
 const URG_LABEL = { 1:'Normale', 2:'Importante', 3:'Urgente' };
 const REC_UNITS = ['day','week','month','year'];
-const COLLS = ['tasks','taskCats','shopCats','shopItems'];
-const VIEWS = ['today','day','week','month','list'];
+const COLLS = ['tasks','taskCats','shopCats','shopItems','days','fixedCosts','settings'];
+const VIEWS = ['today','day','week','month','list','energy'];
+const TASK_COST_MAX = 4, OTHER_COST_MAX = 8;
 const DAY_MS = 864e5;
 
 // ── Utility ─────────────────────────────────────────────────────────────────
@@ -87,6 +89,18 @@ const DEFAULT_TASK_CATS = [
     ['piante', 'Piante e animali', []],
     ['altro', 'Altro', []],
 ];
+// Costo predefinito in cucchiaini: per categoria e, dove cambia, per sottocategoria
+const DEFAULT_CAT_COST = { d_tc_pulizie:2, d_tc_bucato:1, d_tc_cucina:2, d_tc_pratiche:1, d_tc_manutenzione:2, d_tc_piante:1, d_tc_altro:2 };
+const DEFAULT_SUB_COST = { d_ts_pulizie_bagno:3, d_ts_pulizie_pavimenti:3, d_ts_pulizie_vetri:3, d_ts_bucato_stiro:2,
+    d_ts_bucato_cambio_lenzuola:2, d_ts_pratiche_appuntamenti:2 };
+// Spese fisse predefinite: [chiave, nome, cucchiaini, giorni ISO (vuoto = tutti)]
+const DEFAULT_FIXED = [
+    ['igiene', 'Igiene personale', 1, []],
+    ['pasti', 'Preparare e mangiare i pasti', 1, []],
+    ['lezioni', 'Lezioni', 3, [1,2,3,4,5]],
+];
+function defaultSettings(){ return { id:'main', max:12, reserve:1, debt:true, calib:true, _mod:1 }; }
+function defaultFixed(){ return DEFAULT_FIXED.map(([k, name, cost, days]) => ({ id:'d_fx_' + k, name, cost, days:[...days], _mod:1 })); }
 const DEFAULT_SHOP = [
     ['frutta', 'Frutta e verdura', ['Banane','Mele','Pere','Arance','Limoni','Insalata','Pomodori','Zucchine','Carote','Patate','Cipolle','Aglio']],
     ['pane', 'Pane, pasta e cereali', ['Pane','Pasta','Riso','Farina','Biscotti','Fette biscottate','Cereali']],
@@ -98,7 +112,7 @@ const DEFAULT_SHOP = [
     ['pulizia', 'Casa e pulizia', ['Detersivo piatti','Detersivo lavatrice','Carta igienica','Carta da cucina','Sacchi spazzatura','Spugne']],
     ['igiene', 'Igiene personale', ['Shampoo','Bagnoschiuma','Dentifricio','Deodorante']],
 ];
-function emptyData(){ return { v:1, tasks:[], taskCats:[], shopCats:[], shopItems:[], deleted:{}, lastModified:0 }; }
+function emptyData(){ return { v:1, tasks:[], taskCats:[], shopCats:[], shopItems:[], days:[], fixedCosts:[], settings:[], deleted:{}, lastModified:0 }; }
 function seedDefaults(d){
     d.taskCats = DEFAULT_TASK_CATS.map(([k, name, subs], i) => ({
         id:'d_tc_' + k, name, color:CAT_COLORS[i % CAT_COLORS.length], order:i,
@@ -107,6 +121,8 @@ function seedDefaults(d){
     d.shopItems = [];
     DEFAULT_SHOP.forEach(([k, , items]) => items.forEach(n => d.shopItems.push({
         id:`d_si_${k}_${slug(n)}`, catId:'d_sc_' + k, name:n, need:false, qty:'', _mod:1 })));
+    d.fixedCosts = defaultFixed();
+    d.settings = [defaultSettings()];
     return d;
 }
 
@@ -120,6 +136,8 @@ function normRec(r){
 function normalizeData(d){
     const base = emptyData();
     if (!d || typeof d !== 'object') d = {};
+    // Dati della v1.0 (senza energie): aggiunge le spese fisse predefinite una volta sola
+    const migrateFixed = d.fixedCosts === undefined;
     for (const k in base) if (d[k] === undefined) d[k] = base[k];
     if (!d.deleted || typeof d.deleted !== 'object') d.deleted = {};
     COLLS.forEach(c => {
@@ -151,12 +169,20 @@ function normalizeData(d){
         t.log = Array.isArray(t.log) ? t.log.filter(isIso).slice(0, 20) : [];
         t.done = !!t.done && !t.rec;
         t.doneAt = isIso(t.doneAt) ? t.doneAt : null;
+        t.cost = (+t.cost >= 1 && +t.cost <= TASK_COST_MAX) ? +t.cost : null; // null = predefinito della categoria
     });
     d.taskCats.forEach((c, i) => {
         c.name = String(c.name || '').trim() || 'Categoria';
         if (!c.color) c.color = CAT_COLORS[i % CAT_COLORS.length];
         if (typeof c.order !== 'number') c.order = i;
-        c.subs = Array.isArray(c.subs) ? c.subs.filter(s => s && s.name).map(s => ({ id:String(s.id || uid()), name:String(s.name) })) : [];
+        if (!(+c.cost >= 1 && +c.cost <= TASK_COST_MAX)) c.cost = DEFAULT_CAT_COST[c.id] || 2;
+        else c.cost = +c.cost;
+        c.subs = Array.isArray(c.subs) ? c.subs.filter(s => s && s.name).map(s => {
+            const id = String(s.id || uid());
+            let cost = s.cost === undefined ? (DEFAULT_SUB_COST[id] || null) : s.cost;
+            cost = (+cost >= 1 && +cost <= TASK_COST_MAX) ? +cost : null; // null = come la categoria
+            return { id, name:String(s.name), cost };
+        }) : [];
     });
     d.shopCats.forEach((c, i) => {
         c.name = String(c.name || '').trim() || 'Reparto';
@@ -167,6 +193,30 @@ function normalizeData(d){
         it.need = !!it.need;
         it.qty = typeof it.qty === 'string' ? it.qty : '';
         it.catId = it.catId ? String(it.catId) : null;
+    });
+    // ── Energie ──
+    if (migrateFixed && !d.fixedCosts.length) d.fixedCosts = defaultFixed();
+    d.fixedCosts.forEach(f => {
+        f.name = String(f.name || '').trim() || 'Spesa fissa';
+        f.cost = clamp(parseInt(f.cost, 10) || 1, 1, OTHER_COST_MAX);
+        f.days = Array.isArray(f.days) ? [...new Set(f.days.map(Number).filter(n => n >= 1 && n <= 7))].sort((a, b) => a - b) : [];
+    });
+    if (!d.settings.some(s => s.id === 'main')) d.settings.push(defaultSettings());
+    d.settings = d.settings.filter(s => s.id === 'main');
+    const st = d.settings[0];
+    st.max = clamp(parseInt(st.max, 10) || 12, 4, 40);
+    st.reserve = clamp(parseInt(st.reserve, 10) || 0, 0, 10);
+    st.debt = st.debt !== false;
+    st.calib = st.calib !== false;
+    d.days = d.days.filter(x => isIso(x.id));
+    const lvl = v => (v === null || v === undefined || v === '') ? null : clamp(parseInt(v, 10) || 0, 0, 3);
+    d.days.forEach(x => {
+        x.sleep = lvl(x.sleep); x.body = lvl(x.body); x.mind = lvl(x.mind);
+        x.spoons = (typeof x.spoons === 'number' && x.spoons >= 0) ? Math.round(x.spoons) : null;
+        x.debt = Math.max(0, parseInt(x.debt, 10) || 0);
+        x.extras = Array.isArray(x.extras) ? x.extras.filter(e => e && e.name).map(e => ({ id:String(e.id || uid()), name:String(e.name), cost:clamp(parseInt(e.cost, 10) || 1, 1, OTHER_COST_MAX) })) : [];
+        x.done = Array.isArray(x.done) ? x.done.filter(e => e && e.title).map(e => ({ ts:Number(e.ts) || 0, taskId:String(e.taskId || ''), title:String(e.title), cost:clamp(parseInt(e.cost, 10) || 1, 1, OTHER_COST_MAX) })) : [];
+        x.skipFixed = Array.isArray(x.skipFixed) ? x.skipFixed.map(String) : [];
     });
     return d;
 }
@@ -193,6 +243,7 @@ function loadUi(){
         collapsed: (u.collapsed && typeof u.collapsed === 'object') ? u.collapsed : {},
         showDone: !!u.showDone,
         lastShopCat: u.lastShopCat || null,
+        checkinSkip: u.checkinSkip || null,
     };
 }
 let ui = loadUi();
@@ -430,6 +481,7 @@ function buildIndex(from, to){
 function taskMetaHtml(t, opts = {}){
     const parts = [];
     const today = todayStr();
+    parts.push(`<span class="m-spoon" title="Cucchiaini">🥄${effectiveCost(t)}</span>`);
     if (opts.showDate && t.date) {
         const late = t.date < today;
         parts.push(`<span class="${late ? 'm-late' : ''}">${late ? 'scaduto ' : ''}${escHtml(fmtRel(t.date))}${t.time ? ' ' + t.time : ''}</span>`);
@@ -468,8 +520,10 @@ function itemsHtml(items, empty = 'Niente in programma'){
 function renderTasks(app){
     const v = ui.view;
     const vb = (id, label) => `<button class="view-btn${v === id ? ' active' : ''}" onclick="setView('${id}')">${label}</button>`;
-    app.innerHTML = `<div class="view-toggle">${vb('today','Oggi')}${vb('day','Giorno')}${vb('week','Settimana')}${vb('month','Mese')}${vb('list','Elenco')}</div>
+    app.innerHTML = `<div class="view-toggle">${vb('today','Oggi')}${vb('day','Giorno')}${vb('week','Settimana')}${vb('month','Mese')}${vb('list','Elenco')}${vb('energy','Energia')}</div>
         <div id="tasksArea"></div>`;
+    const tg = app.querySelector('.view-toggle'), act = tg && tg.querySelector('.view-btn.active');
+    if (act) tg.scrollLeft = Math.max(0, act.offsetLeft - tg.offsetLeft - 24);
     renderTasksArea();
 }
 function renderTasksArea(){
@@ -479,6 +533,7 @@ function renderTasksArea(){
     else if (ui.view === 'day') renderDayView(area);
     else if (ui.view === 'week') renderWeekView(area);
     else if (ui.view === 'month') renderMonthView(area);
+    else if (ui.view === 'energy') renderEnergyView(area);
     else renderListView(area);
 }
 
@@ -499,6 +554,7 @@ function renderToday(area){
             <div><div class="today-date">${now.getDate()} ${MONTHS_IT[now.getMonth()]}</div><div class="today-dow">${DOW_FULL[now.getDay()]}</div></div>
             <div class="today-summary">${summary.join('<br>')}</div>
         </div>
+        ${energyCardHtml()}
         ${late.length + todays.length ? `<button class="imprevisto-btn" onclick="openImprevisto()">Imprevisto: rimanda a domani</button>` : ''}
         ${late.length ? `<div class="block"><div class="block-title late"><span>In ritardo</span><span class="count">${late.length}</span></div>
             ${late.map(t => taskCardHtml(t, { showDate:true })).join('')}</div>` : ''}
@@ -543,6 +599,7 @@ function renderDayView(area){
         }).join('')}</div>
         <div class="gcal-day-events">
             <div class="gcal-date-header">${selDay.getDate()} ${MONTHS_IT[selDay.getMonth()]}, ${DOW_FULL[selDay.getDay()]}</div>
+            ${dayLoadLine(selStr, idx)}
             ${itemsHtml(idx.get(selStr))}
         </div>
     </div>`;
@@ -561,8 +618,8 @@ function renderWeekView(area){
     </div><div style="padding:12px 12px 2px;">${days.map(d => {
         const ds = localDateStr(d);
         return `<div class="day-section"><div class="day-title${ds === todayISO ? ' today' : ''}">
-            <span>${d.getDate()} ${MONTHS_IT[d.getMonth()].slice(0, 3)}</span>
-            <span style="font-size:.68rem;opacity:.5;">${DOW_FULL[d.getDay()]}</span></div>
+            <span>${d.getDate()} ${MONTHS_IT[d.getMonth()].slice(0, 3)} <span style="font-size:.68rem;opacity:.5;">${DOW_FULL[d.getDay()]}</span></span>
+            ${loadTagHtml(ds, idx)}</div>
             ${itemsHtml(idx.get(ds), 'Libero')}</div>`;
     }).join('')}</div></div>`;
 }
@@ -654,26 +711,44 @@ function nextFutureOcc(t){
     while (next <= today && guard++ < 2000) next = nextOcc(t.rec, next, t.anchor);
     return next;
 }
+function snapDay(iso){ const d = dayRec(iso); return d ? JSON.parse(JSON.stringify(d)) : null; }
+function restoreDay(iso, snap){
+    data.days = data.days.filter(x => x.id !== iso);
+    if (snap) data.days.push(snap);
+}
 function completeTask(id){
     const t = findTask(id);
     if (!t) return;
-    const before = cloneTask(t), today = todayStr();
+    const today = todayStr();
+    const before = cloneTask(t), dayBefore = snapDay(today);
+    // i cucchiaini spesi restano registrati sul giorno in cui lo fai
+    const expected = effectiveCost(t);
+    const entry = { ts:Date.now(), taskId:t.id, title:t.title, cost:expected };
+    ensureDay(today).done.push(entry);
+    let msg;
     if (t.rec) {
         t.log = [today, ...t.log].slice(0, 20);
         const next = t.rec.fromDone ? nextOcc(t.rec, today, null) : nextFutureOcc(t);
         t.date = t.sched = next;
         t.postponed = 0;
-        save(); closeModal('modalSheet'); render();
-        showToast(`✓ Fatto. Prossima volta: ${fmtRel(next)}`, { label:'Annulla', fn:() => restoreTask(before) });
+        msg = `✓ Fatto. Prossima volta: ${fmtRel(next)}`;
     } else {
         t.done = true; t.doneAt = today;
-        save(); closeModal('modalSheet'); render();
-        showToast('✓ Fatto', { label:'Annulla', fn:() => restoreTask(before) });
+        msg = '✓ Fatto';
     }
+    save(); closeModal('modalSheet'); render();
+    showToast(msg, { label:'Annulla', fn:() => {
+        closeModal('modalCalib');
+        restoreDay(today, dayBefore);
+        restoreTask(before);
+    } });
+    if (settings().calib) openCalib(t.id, entry.ts, expected);
 }
 function reopenTask(id){
     const t = findTask(id);
     if (!t) return;
+    const d = t.doneAt ? dayRec(t.doneAt) : null;
+    if (d) d.done = d.done.filter(e => e.taskId !== t.id);
     t.done = false; t.doneAt = null;
     save(); closeModal('modalSheet'); render();
     showToast('Impegno riaperto');
@@ -722,6 +797,7 @@ function openTaskSheet(id, ghostDate){
     if (t.date && t.date < today && !t.done) rows.push(['Stato', '<span style="color:var(--danger)">In ritardo</span>']);
     rows.push(['Categoria', c ? escHtml(c.name + (s ? ' › ' + s.name : '')) : 'Nessuna']);
     rows.push(['Urgenza', `<span style="color:${taskColor(t)}">${URG_LABEL[t.urg]}</span>`]);
+    rows.push(['Cucchiaini', `🥄 ${effectiveCost(t)}${t.cost ? '' : ' <span style="color:var(--text-dim)">(predefinito)</span>'}`]);
     if (t.rec) rows.push(['Si ripete', escHtml(recLabel(t.rec))]);
     if (t.log.length) rows.push(['Ultima volta', escHtml(fmtDate(t.log[0]))]);
     if (t.postponed) rows.push(['Rimandato', `<span style="color:var(--warning)">${t.postponed} ${t.postponed === 1 ? 'volta' : 'volte'}</span>`]);
@@ -779,7 +855,7 @@ function applyImprevisto(onlySoft){
 }
 
 // ── Modulo nuovo / modifica impegno ─────────────────────────────────────────
-let editingTaskId = null, formUrg = 1, formDays = [];
+let editingTaskId = null, formUrg = 1, formDays = [], formCost = null;
 function fillCatSelect(selected){
     $('tCat').innerHTML = `<option value="">Senza categoria</option>` +
         sortedCats().map(c => `<option value="${escHtml(c.id)}"${c.id === selected ? ' selected' : ''}>${escHtml(c.name)}</option>`).join('');
@@ -787,11 +863,27 @@ function fillCatSelect(selected){
 function fillSubSelect(selected){
     const c = getCat($('tCat').value);
     const sel = $('tSub');
-    if (!c || !c.subs.length) { sel.innerHTML = ''; sel.classList.add('hidden'); return; }
+    if (!c || !c.subs.length) { sel.innerHTML = ''; sel.classList.add('hidden'); renderFormCost(); return; }
     sel.classList.remove('hidden');
     sel.innerHTML = `<option value="">Generale</option>` +
         c.subs.map(s => `<option value="${escHtml(s.id)}"${s.id === selected ? ' selected' : ''}>${escHtml(s.name)}</option>`).join('');
+    renderFormCost();
 }
+// Costo in cucchiaini: "predefinito" segue la (sotto)categoria scelta nel modulo
+function formDefaultCost(){
+    const c = getCat($('tCat').value);
+    const s = c && !$('tSub').classList.contains('hidden') ? getSub(c, $('tSub').value) : null;
+    return (s && s.cost) || (c && c.cost) || 2;
+}
+function renderFormCost(){
+    const box = $('tCost');
+    if (!box) return;
+    const def = formDefaultCost();
+    box.innerHTML = `<button type="button" class="chip${formCost === null ? ' on' : ''}" onclick="setFormCost(null)">Predefinito · ${def}</button>` +
+        [1, 2, 3, 4].map(n => `<button type="button" class="chip${formCost === n ? ' on' : ''}" onclick="setFormCost(${n})">${n}</button>`).join('');
+    $('tCostHint').textContent = COST_HINTS[formCost || def];
+}
+function setFormCost(n){ formCost = n; renderFormCost(); }
 function renderFormUrg(){
     const colors = { 1:'var(--accent)', 2:'var(--warning)', 3:'var(--danger)' };
     $('tUrg').innerHTML = [1, 2, 3].map(n => `<div class="t-dot${formUrg === n ? ' active' : ''}" style="background:${colors[n]}" onclick="setFormUrg(${n})">${URG_LABEL[n]}</div>`).join('');
@@ -835,6 +927,7 @@ function openTaskModal(id){
     editingTaskId = t ? t.id : null;
     $('taskModalTitle').textContent = t ? 'Modifica impegno' : 'Nuovo impegno';
     $('tTitle').value = t ? t.title : '';
+    formCost = t ? t.cost : null;
     fillCatSelect(t ? t.catId : '');
     fillSubSelect(t ? t.subId : '');
     formUrg = t ? t.urg : 1;
@@ -864,7 +957,7 @@ function saveTask(){
     }
     const catId = $('tCat').value || null;
     const subId = catId && !$('tSub').classList.contains('hidden') ? ($('tSub').value || null) : null;
-    const fields = { title, catId, subId, urg:formUrg, date, time:parseTimeInput($('tTime').value), notes:$('tNotes').value.trim(), rec };
+    const fields = { title, catId, subId, urg:formUrg, cost:formCost, date, time:parseTimeInput($('tTime').value), notes:$('tNotes').value.trim(), rec };
     if (editingTaskId) {
         const t = findTask(editingTaskId);
         if (!t) { closeModal('modalTask'); return; }
@@ -876,7 +969,10 @@ function saveTask(){
         data.tasks.push({ id:uid(), ...fields, sched:date, anchor:date, postponed:0, log:[], done:false, doneAt:null, created:Date.now() });
     }
     save(); closeModal('modalTask'); render();
-    showToast(editingTaskId ? 'Impegno aggiornato' : 'Impegno aggiunto');
+    // Avvisa subito se quel giorno supera le energie disponibili
+    const over = date && date >= todayStr() ? loadOn(date) - budgetOn(date) : 0;
+    if (over > 0) showToast(`${editingTaskId ? 'Aggiornato' : 'Aggiunto'}, ma ${fmtRel(date)} sfori di ${over} 🥄`);
+    else showToast(editingTaskId ? 'Impegno aggiornato' : 'Impegno aggiunto');
     editingTaskId = null;
 }
 function deleteTaskFromModal(){
@@ -895,12 +991,14 @@ function deleteTaskFromModal(){
 function openCatsModal(){ renderCatsBody(); openModal('modalCats'); }
 function renderCatsBody(){
     const cats = sortedCats();
-    $('catsBody').innerHTML = cats.map((c, i) => {
+    $('catsBody').innerHTML = `<p class="confirm-msg" style="font-size:.76rem;margin-bottom:4px;">🥄 = cucchiaini che un impegno di quella categoria costa di solito. “=” vuol dire: come la categoria.</p>` + cats.map((c, i) => {
         const a = jsArg(c.id);
         return `<div class="mg-cat">
             <div class="mg-row">
                 <button class="mg-swatch" style="background:${c.color}" onclick="cycleCatColor(${a})" title="Cambia colore" aria-label="Cambia colore"></button>
                 <input type="text" value="${escHtml(c.name)}" maxlength="40" onchange="renameCat(${a},this.value)" aria-label="Nome categoria">
+                <select class="mg-cost" onchange="setCatCost(${a},null,this.value)" aria-label="Cucchiaini predefiniti">
+                    ${[1,2,3,4].map(n => `<option value="${n}"${c.cost === n ? ' selected' : ''}>🥄${n}</option>`).join('')}</select>
                 <button class="mg-btn" onclick="moveCat(${a},-1)" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su">▲</button>
                 <button class="mg-btn" onclick="moveCat(${a},1)" ${i === cats.length - 1 ? 'disabled' : ''} aria-label="Sposta giù">▼</button>
                 <button class="mg-btn danger" onclick="deleteCat(${a})" aria-label="Elimina">✕</button>
@@ -908,6 +1006,9 @@ function renderCatsBody(){
             <div class="mg-subs">
                 ${c.subs.map(s => `<div class="mg-row">
                     <input type="text" value="${escHtml(s.name)}" maxlength="40" onchange="renameSub(${a},${jsArg(s.id)},this.value)" aria-label="Nome sottocategoria">
+                    <select class="mg-cost" onchange="setCatCost(${a},${jsArg(s.id)},this.value)" aria-label="Cucchiaini">
+                        <option value=""${s.cost ? '' : ' selected'}>= ${c.cost}</option>
+                        ${[1,2,3,4].map(n => `<option value="${n}"${s.cost === n ? ' selected' : ''}>🥄${n}</option>`).join('')}</select>
                     <button class="mg-btn danger" onclick="deleteSub(${a},${jsArg(s.id)})" aria-label="Elimina">✕</button></div>`).join('')}
                 <div class="mg-row"><input type="text" id="newSub_${escHtml(c.id)}" placeholder="+ sottocategoria" maxlength="40" onkeydown="if(event.key==='Enter'){event.preventDefault();addSub(${a});}">
                     <button class="mg-btn" onclick="addSub(${a})" aria-label="Aggiungi sottocategoria">+</button></div>
@@ -918,11 +1019,19 @@ function renderCatsBody(){
         <button class="add-btn" onclick="addCat()">Aggiungi</button></div>`;
 }
 function catsChanged(){ save(); renderCatsBody(); _pendingRender = true; }
+function setCatCost(catId, subId, v){
+    const c = getCat(catId);
+    if (!c) return;
+    const n = parseInt(v, 10);
+    if (subId) { const s = getSub(c, subId); if (s) s.cost = (n >= 1 && n <= TASK_COST_MAX) ? n : null; }
+    else if (n >= 1 && n <= TASK_COST_MAX) c.cost = n;
+    catsChanged();
+}
 function addCat(){
     const name = $('newCatName').value.trim();
     if (!name) return;
     const maxO = data.taskCats.reduce((m, c) => Math.max(m, c.order), -1);
-    data.taskCats.push({ id:uid(), name, color:CAT_COLORS[data.taskCats.length % CAT_COLORS.length], order:maxO + 1, subs:[] });
+    data.taskCats.push({ id:uid(), name, color:CAT_COLORS[data.taskCats.length % CAT_COLORS.length], order:maxO + 1, cost:2, subs:[] });
     catsChanged();
 }
 function renameCat(id, v){
@@ -958,7 +1067,7 @@ function addSub(catId){
     if (!c || !inp) return;
     const name = inp.value.trim();
     if (!name) return;
-    c.subs.push({ id:uid(), name });
+    c.subs.push({ id:uid(), name, cost:null });
     catsChanged();
     const again = $('newSub_' + catId);
     if (again) again.focus();
@@ -974,6 +1083,431 @@ function deleteSub(catId, subId){
     data.tasks.forEach(t => { if (t.catId === catId && t.subId === subId) t.subId = null; });
     c.subs = c.subs.filter(s => s.id !== subId);
     catsChanged();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ENERGIE (teoria dei cucchiaini)
+// ═══════════════════════════════════════════════════════════════════════════
+const COST_HINTS = {
+    1:'Leggero: si fa senza pensarci (pagare online, innaffiare).',
+    2:'Medio: richiede un po’ di impegno (una lavatrice da stendere, la cucina).',
+    3:'Pesante: fatica fisica o tempo lungo (bagno a fondo, pavimenti).',
+    4:'Molto pesante: ti lascia stanca (cambio di stagione, pulizie grandi).',
+};
+const CHECKIN_QS = [
+    { key:'sleep', label:'Come hai dormito?', opts:['Bene','Così così','Poco o male','Malissimo'] },
+    { key:'body', label:'Come sta il corpo?', opts:['In forma','Un po’ di stanchezza','Dolori o fatica','Molto provato'] },
+    { key:'mind', label:'E la testa?', opts:['Lucida','Un po’ carica','Sotto stress','Annebbiata'] },
+];
+function settings(){ return data.settings[0]; }
+function effectiveCost(t){
+    if (t.cost) return t.cost;
+    const c = getCat(t.catId), s = getSub(c, t.subId);
+    return (s && s.cost) || (c && c.cost) || 2;
+}
+function dayRec(iso){ return data.days.find(d => d.id === iso) || null; }
+function ensureDay(iso){
+    let d = dayRec(iso);
+    if (!d) { d = { id:iso, sleep:null, body:null, mind:null, spoons:null, debt:0, extras:[], done:[], skipFixed:[] }; data.days.push(d); }
+    return d;
+}
+function hasCheckin(iso){ const d = dayRec(iso); return !!(d && typeof d.spoons === 'number'); }
+function fixedFor(iso){
+    const dow = isoDow(parseLocalDate(iso)), d = dayRec(iso), skip = d ? d.skipFixed : [];
+    return data.fixedCosts.filter(f => !f.days.length || f.days.includes(dow)).map(f => ({ f, skipped:skip.includes(f.id) }));
+}
+function fixedSum(iso){ return fixedFor(iso).reduce((n, x) => n + (x.skipped ? 0 : x.f.cost), 0); }
+function extrasSum(iso){ const d = dayRec(iso); return d ? d.extras.reduce((n, e) => n + e.cost, 0) : 0; }
+function doneSum(iso){ const d = dayRec(iso); return d ? d.done.reduce((n, e) => n + e.cost, 0) : 0; }
+function spentOn(iso){ return fixedSum(iso) + extrasSum(iso) + doneSum(iso); }
+// Energia "tipica": media degli ultimi 14 check-in (servono almeno 3), altrimenti il massimo
+function typicalSpoons(){
+    const today = todayStr();
+    const recs = data.days.filter(d => typeof d.spoons === 'number' && d.id < today).sort((a, b) => b.id.localeCompare(a.id)).slice(0, 14);
+    if (recs.length < 3) return settings().max;
+    return Math.round(recs.reduce((n, d) => n + d.spoons, 0) / recs.length);
+}
+function availableOn(iso){ return hasCheckin(iso) ? dayRec(iso).spoons : typicalSpoons(); }
+function budgetOn(iso){ return Math.max(0, availableOn(iso) - settings().reserve); }
+function openLoadToday(){
+    const today = todayStr();
+    return openTasks().filter(t => t.date && t.date <= today).reduce((n, t) => n + effectiveCost(t), 0);
+}
+// Carico di un giorno. Oggi: già speso + in programma (compresi i ritardi).
+// Giorni futuri: spese fisse + impegni + ricorrenze previste. Passati: speso.
+function loadOn(iso, idx){
+    const today = todayStr();
+    if (iso < today) return spentOn(iso);
+    if (iso === today) return spentOn(iso) + openLoadToday();
+    const items = (idx && idx.has(iso)) ? idx.get(iso) : (buildIndex(iso, iso).get(iso) || []);
+    return spentOn(iso) + items.reduce((n, it) => n + effectiveCost(it.t), 0);
+}
+function loadTagHtml(iso, idx){
+    const today = todayStr();
+    if (iso < today && !hasCheckin(iso)) return '';
+    const load = loadOn(iso, idx);
+    if (iso < today) {
+        const av = dayRec(iso).spoons;
+        return `<span class="load-tag${load > av ? ' over' : ''}" title="Spesi su disponibili">🥄 ${load}/${av}</span>`;
+    }
+    const bud = budgetOn(iso);
+    const est = iso === today && hasCheckin(iso) ? '' : '≈';
+    return `<span class="load-tag${load > bud ? ' over' : ''}" title="Carico previsto su energie (riserva esclusa)">🥄 ${load}/${est}${bud}</span>`;
+}
+function dayLoadLine(iso, idx){
+    const today = todayStr();
+    if (iso < today) {
+        if (!hasCheckin(iso)) return '';
+        const av = dayRec(iso).spoons, sp = spentOn(iso);
+        return `<div class="day-load${sp > av ? ' over' : ''}">Spesi ${sp} cucchiaini su ${av}</div>`;
+    }
+    const load = loadOn(iso, idx), bud = budgetOn(iso);
+    const what = iso === today && hasCheckin(iso) ? 'disponibili oggi' : 'tipici';
+    const over = load - bud;
+    return `<div class="day-load${over > 0 ? ' over' : ''}">Carico ${load} cucchiaini su ${bud} ${what} (riserva esclusa)${over > 0 ? `: sfori di ${over}` : ''}</div>`;
+}
+
+// ── Check-in del mattino ────────────────────────────────────────────────────
+function debtFor(iso){
+    if (!settings().debt) return 0;
+    const y = shiftDate(iso, -1);
+    if (!hasCheckin(y)) return 0;
+    const over = spentOn(y) - dayRec(y).spoons;
+    return clamp(over, 0, Math.ceil(settings().max * 0.25));
+}
+// Ogni risposta toglie una parte del massimo: tutto "bene" = massimo, tutto "male" = un quarto
+function proposeSpoons(ans, debt){
+    const max = settings().max;
+    const sum = CHECKIN_QS.reduce((n, q) => n + (ans[q.key] || 0), 0);
+    const raw = Math.round(max * (1 - (sum / 9) * 0.75));
+    return { max, penalty:max - raw, result:Math.max(1, raw - debt) };
+}
+let ci = null;
+function isFirstCheckin(){ return !data.days.some(d => typeof d.spoons === 'number'); }
+function maybeCheckin(){
+    const today = todayStr();
+    if (hasCheckin(today) || ui.checkinSkip === today || anyModalOpen()) return;
+    openCheckin();
+}
+function openCheckin(){
+    const today = todayStr(), d = dayRec(today);
+    const redo = hasCheckin(today);
+    ci = { ans:{ sleep:d ? d.sleep : null, body:d ? d.body : null, mind:d ? d.mind : null },
+        debt:redo ? d.debt : debtFor(today), manual:redo ? d.spoons : null, first:isFirstCheckin() };
+    renderCheckin();
+    openModal('modalCheckin');
+}
+function renderCheckin(){
+    const p = proposeSpoons(ci.ans, ci.debt);
+    const value = ci.manual !== null ? ci.manual : p.result;
+    const answered = CHECKIN_QS.every(q => ci.ans[q.key] !== null);
+    const parts = [`massimo ${p.max}`];
+    if (p.penalty) parts.push(`−${p.penalty} per come stai`);
+    if (ci.debt) parts.push(`−${ci.debt} per ieri`);
+    if (ci.manual !== null && ci.manual !== p.result) parts.push(`${ci.manual > p.result ? '+' : '−'}${Math.abs(ci.manual - p.result)} correzione tua`);
+    $('checkinBody').innerHTML = `
+        <div class="modal-title">Come va oggi?</div>
+        ${ci.first ? `<div class="ci-first">
+            <p>Prima volta: quanti cucchiaini hai in una giornata <b>buona</b>? Di solito si parte da 12. Puoi cambiarlo quando vuoi in Energia.</p>
+            <div class="stepper"><button onclick="stepSetting('max',-1,true)" aria-label="Meno">−</button><span>${settings().max}</span><button onclick="stepSetting('max',1,true)" aria-label="Più">+</button></div>
+        </div>` : ''}
+        ${CHECKIN_QS.map(q => `<div class="ci-q"><div class="field-label">${q.label}</div>
+            <div class="ci-opts">${q.opts.map((o, i) => `<button type="button" class="chip${ci.ans[q.key] === i ? ' on' : ''}" onclick="setCiAns('${q.key}',${i})">${o}</button>`).join('')}</div></div>`).join('')}
+        <div class="ci-result${answered ? '' : ' dim'}">
+            <button class="ci-step" onclick="stepCi(-1)" aria-label="Meno">−</button>
+            <div><div class="ci-num">${value}</div><div class="ci-unit">cucchiaini oggi</div></div>
+            <button class="ci-step" onclick="stepCi(1)" aria-label="Più">+</button>
+        </div>
+        <div class="ci-break">${parts.join(', ')}</div>
+        ${ci.debt ? `<div class="sheet-info" style="text-align:center;">Ieri hai sforato: parti con ${ci.debt} in meno. Oggi vacci piano.</div>` : ''}
+        <button class="btn btn-primary" onclick="saveCheckin()">${hasCheckin(todayStr()) ? 'Aggiorna' : 'Inizia la giornata'}</button>
+        <button class="btn btn-secondary" onclick="skipCheckin()">${hasCheckin(todayStr()) ? 'Annulla' : 'Salta per oggi'}</button>`;
+}
+function setCiAns(k, i){ ci.ans[k] = i; ci.manual = null; renderCheckin(); }
+function stepCi(dir){
+    const p = proposeSpoons(ci.ans, ci.debt);
+    const cur = ci.manual !== null ? ci.manual : p.result;
+    ci.manual = clamp(cur + dir, 0, settings().max + 5);
+    renderCheckin();
+}
+function saveCheckin(){
+    const today = todayStr(), d = ensureDay(today);
+    const p = proposeSpoons(ci.ans, ci.debt);
+    d.sleep = ci.ans.sleep; d.body = ci.ans.body; d.mind = ci.ans.mind;
+    d.debt = ci.debt;
+    d.spoons = ci.manual !== null ? ci.manual : p.result;
+    save(); closeModal('modalCheckin'); render();
+    const over = loadOn(today) - budgetOn(today);
+    showToast(over > 0 ? `${d.spoons} cucchiaini. Oggi sfori di ${over}: guarda i consigli` : `${d.spoons} cucchiaini per oggi`);
+}
+function skipCheckin(){
+    if (!hasCheckin(todayStr())) { ui.checkinSkip = todayStr(); saveUi(); }
+    closeModal('modalCheckin');
+}
+
+// ── Scheda energie in "Oggi" e consigli ─────────────────────────────────────
+// Sceglie cosa spostare: mai gli urgenti; prima i meno urgenti; tra questi il
+// compito più piccolo che basta a rientrare, altrimenti il più pesante.
+function suggestMoves(){
+    const today = todayStr();
+    if (!hasCheckin(today)) return { excess:0, moves:[] };
+    let excess = loadOn(today) - budgetOn(today);
+    if (excess <= 0) return { excess:0, moves:[] };
+    const pool = openTasks().filter(t => t.date && t.date <= today && t.urg < 3);
+    const idx = buildIndex(shiftDate(today, 1), shiftDate(today, 21));
+    const added = new Map(), moves = [];
+    while (excess > 0 && pool.length) {
+        const minUrg = Math.min(...pool.map(t => t.urg));
+        const group = pool.filter(t => t.urg === minUrg);
+        const enough = group.filter(t => effectiveCost(t) >= excess).sort((a, b) => effectiveCost(a) - effectiveCost(b));
+        const pick = enough[0] || group.sort((a, b) => effectiveCost(b) - effectiveCost(a))[0];
+        pool.splice(pool.indexOf(pick), 1);
+        const c = effectiveCost(pick);
+        let target = null, best = null, bestFree = -Infinity;
+        for (let i = 1; i <= 21; i++) {
+            const d = shiftDate(today, i);
+            const free = budgetOn(d) - loadOn(d, idx) - (added.get(d) || 0);
+            if (free >= c) { target = d; break; }
+            if (free > bestFree) { bestFree = free; best = d; }
+        }
+        target = target || best;
+        added.set(target, (added.get(target) || 0) + c);
+        moves.push({ t:pick, target, cost:c });
+        excess -= c;
+    }
+    return { excess:Math.max(0, excess), moves };
+}
+function energyCardHtml(){
+    const today = todayStr(), st = settings();
+    if (!hasCheckin(today)) return `<div class="energy-card"><div class="energy-empty">
+        <span>Fai il check-in per sapere quanti cucchiaini hai oggi.</span>
+        <button class="add-btn" onclick="openCheckin()">Check-in</button></div></div>`;
+    const S = dayRec(today).spoons, R = Math.min(st.reserve, S);
+    const used = spentOn(today), planned = openLoadToday(), total = used + planned;
+    const n = Math.max(S, total);
+    const cells = Array.from({ length:n }, (_, i) => {
+        let cls = i < used ? 'spent' : i < total ? 'planned' : 'free';
+        if (i >= S) cls += ' over';
+        else if (i >= S - R) cls += ' reserve';
+        return `<span class="spoon-cell ${cls}"></span>`;
+    }).join('');
+    const left = S - used, freeBeyond = S - R - total;
+    const { excess, moves } = suggestMoves();
+    let status;
+    if (moves.length || excess > 0) {
+        const tot = total - (S - R);
+        status = `<div class="energy-over"><div class="eo-title">Oggi sfori di ${tot} ${tot === 1 ? 'cucchiaino' : 'cucchiaini'}${R ? ', riserva compresa' : ''}</div>
+            ${moves.length ? `<div class="eo-sub">Ti suggerisco di spostare:</div>
+            ${moves.map(m => `<div class="eo-row"><span class="eo-name">${escHtml(m.t.title)} <span class="m-spoon">🥄${m.cost}</span></span>
+                <button class="add-btn" onclick="applyMove(${jsArg(m.t.id)},${jsArg(m.target)})">${escHtml(fmtRel(m.target))}</button></div>`).join('')}
+            ${moves.length > 1 ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="applyAllMoves()">Sposta tutti</button>` : ''}` : ''}
+            ${excess > 0 ? `<div class="eo-note">${moves.length ? 'Anche così resti oltre di ' + excess + ': il resto è urgente.' : 'Quello che resta è urgente.'} Fai solo l’indispensabile e, se puoi, chiedi una mano.</div>` : ''}
+        </div>`;
+    } else if (freeBeyond >= 0) {
+        status = `<div class="energy-ok">${freeBeyond ? `Hai ancora ${freeBeyond} ${freeBeyond === 1 ? 'cucchiaino libero' : 'cucchiaini liberi'} oltre la riserva.` : 'Giornata piena ma sostenibile: la riserva è intatta.'}</div>`;
+    } else status = '';
+    return `<div class="energy-card">
+        <div class="energy-top">
+            <div><span class="energy-num">${Math.max(0, left)}</span><span class="energy-of">${left === 1 ? 'cucchiaino rimasto' : 'cucchiaini rimasti'} su ${S}</span></div>
+            <button class="link-btn" onclick="setView('energy')">Dettagli</button>
+        </div>
+        <div class="spoon-bar" aria-label="Spesi ${used}, in programma ${planned}, disponibili ${S}">${cells}</div>
+        <div class="energy-legend"><span><i class="lg spent"></i>Spesi ${used}</span><span><i class="lg planned"></i>In programma ${planned}</span>${R ? `<span><i class="lg reserve"></i>Riserva ${R}</span>` : ''}</div>
+        ${status}
+        <button class="link-btn" onclick="openExtraQuick()">+ Altro che ti ha stancato oggi</button>
+    </div>`;
+}
+function applyMove(id, iso){
+    const t = findTask(id);
+    if (!t || !isIso(iso)) return;
+    const before = cloneTask(t);
+    t.date = iso; t.postponed++;
+    save(); render();
+    showToast(`Spostato a ${fmtRel(iso)}`, { label:'Annulla', fn:() => restoreTask(before) });
+}
+function applyAllMoves(){
+    const { moves } = suggestMoves();
+    if (!moves.length) return;
+    const before = moves.map(m => cloneTask(m.t));
+    moves.forEach(m => { m.t.date = m.target; m.t.postponed++; });
+    save(); render();
+    showToast(`${moves.length} impegni spostati`, { label:'Annulla', fn:() => {
+        before.forEach(b => { const i = data.tasks.findIndex(x => x.id === b.id); if (i >= 0) data.tasks[i] = b; });
+        save(); render();
+    } });
+}
+
+// ── Calibrazione dei costi ──────────────────────────────────────────────────
+function openCalib(taskId, ts, expected){
+    const t = findTask(taskId);
+    if (!t) return;
+    $('calibBody').innerHTML = `
+        <div class="modal-title">Quanto ti è costato?</div>
+        <p class="confirm-msg" style="margin-bottom:12px;">${escHtml(t.title)}: avevo previsto ${expected} ${expected === 1 ? 'cucchiaino' : 'cucchiaini'}.</p>
+        <div class="calib-grid">${[1,2,3,4,5,6].map(n => `<button class="btn ${n === expected ? 'btn-primary' : 'btn-secondary'}" onclick="calibrate(${jsArg(taskId)},${ts},${n},${expected})">${n}</button>`).join('')}</div>
+        <button class="btn btn-secondary" onclick="closeModal('modalCalib')">Come previsto</button>`;
+    openModal('modalCalib');
+}
+function calibrate(taskId, ts, n, expected){
+    const today = todayStr(), d = dayRec(today);
+    const entry = d && d.done.find(e => e.ts === ts);
+    closeModal('modalCalib');
+    if (!entry || n === expected) return;
+    entry.cost = n;
+    const t = findTask(taskId);
+    // Gli impegni che si ripetono imparano il costo vero per la prossima volta
+    if (t && t.rec) t.cost = clamp(n, 1, TASK_COST_MAX);
+    save(); render();
+    showToast(t && t.rec ? `Segnato ${n}. La prossima volta lo conto ${clamp(n, 1, TASK_COST_MAX)}` : `Segnato: ${n} cucchiaini`);
+}
+
+// ── Vista Energia ───────────────────────────────────────────────────────────
+function costOptions(sel){ return Array.from({ length:OTHER_COST_MAX }, (_, i) => i + 1).map(n => `<option value="${n}"${n === sel ? ' selected' : ''}>🥄 ${n}</option>`).join(''); }
+function renderEnergyView(area){
+    const today = todayStr(), st = settings(), d = dayRec(today), checked = hasCheckin(today);
+    const ans = checked ? CHECKIN_QS.filter(q => d[q.key] !== null).map(q => `${q.label.replace('?', '')}: ${q.opts[d[q.key]].toLowerCase()}`) : [];
+    const fixed = fixedFor(today);
+    const extras = d ? d.extras : [], done = d ? d.done : [];
+    area.innerHTML = `
+        <div class="block">
+            <div class="block-title"><span>Oggi</span><span class="count">${checked ? `${spentOn(today)} spesi su ${d.spoons}` : ''}</span></div>
+            ${checked ? `<div class="e-summary">${ans.length ? escHtml(ans.join('. ')) + '.' : ''}${d.debt ? ` Debito da ieri: −${d.debt}.` : ''}</div>
+                <button class="btn btn-secondary" style="margin-top:0;" onclick="openCheckin()">Rifai il check-in</button>`
+                : `<button class="btn btn-primary" style="margin-top:0;" onclick="openCheckin()">Fai il check-in</button>`}
+            <div class="field-label">Spese fisse di oggi</div>
+            ${fixed.length ? fixed.map(x => `<div class="e-row${x.skipped ? ' off' : ''}" onclick="toggleFixedToday(${jsArg(x.f.id)})" role="checkbox" aria-checked="${!x.skipped}">
+                <span class="shop-box"></span><span class="e-name">${escHtml(x.f.name)}</span><span class="m-spoon">🥄${x.f.cost}</span></div>`).join('')
+                + `<div class="e-hint">Togli la spunta a quello che oggi non fai (es. niente lezioni).</div>`
+                : `<div class="empty-note">Nessuna spesa fissa per oggi.</div>`}
+            <div class="field-label">Altro che ti ha stancato oggi</div>
+            ${extras.map(e => `<div class="e-row static"><span class="e-name">${escHtml(e.name)}</span><span class="m-spoon">🥄${e.cost}</span>
+                <button class="shop-edit" onclick="removeExtra(${jsArg(e.id)})" aria-label="Elimina">✕</button></div>`).join('')}
+            <div class="e-add">
+                <input type="text" id="exName" placeholder="Visita, viaggio, esame…" maxlength="50" onkeydown="if(event.key==='Enter'){event.preventDefault();addExtra();}">
+                <select class="styled-select" id="exCost" aria-label="Cucchiaini">${costOptions(1)}</select>
+                <button class="add-btn" onclick="addExtra()">Aggiungi</button>
+            </div>
+            ${done.length ? `<div class="field-label">Fatti oggi</div>${done.map(e => `<div class="e-row static"><span class="e-name">${escHtml(e.title)}</span><span class="m-spoon">🥄${e.cost}</span></div>`).join('')}` : ''}
+        </div>
+        <div class="block"><div class="block-title"><span>Andamento</span><span class="count">14 giorni</span></div>${energyChartHtml()}</div>
+        <div class="block"><div class="block-title"><span>Spese fisse</span></div>
+            ${data.fixedCosts.map(f => `<div class="e-row" onclick="openFixedModal(${jsArg(f.id)})"><span class="e-name">${escHtml(f.name)}
+                <span class="e-days">${f.days.length ? f.days.map(n => ISO_DOW_LABELS[n].toLowerCase()).join(', ') : 'ogni giorno'}</span></span><span class="m-spoon">🥄${f.cost}</span></div>`).join('')
+                || `<div class="empty-note">Nessuna spesa fissa. Aggiungi le cose che fai quasi ogni giorno: igiene, lezioni, lavoro.</div>`}
+            <button class="btn btn-secondary" onclick="openFixedModal()">+ Spesa fissa</button>
+        </div>
+        <div class="block"><div class="block-title"><span>Impostazioni</span></div>
+            <div class="set-row"><div><div class="set-name">Giornata buona</div><div class="set-desc">Cucchiaini quando stai bene</div></div>
+                <div class="stepper"><button onclick="stepSetting('max',-1)" aria-label="Meno">−</button><span>${st.max}</span><button onclick="stepSetting('max',1)" aria-label="Più">+</button></div></div>
+            <div class="set-row"><div><div class="set-name">Riserva</div><div class="set-desc">Cucchiaini da non pianificare mai</div></div>
+                <div class="stepper"><button onclick="stepSetting('reserve',-1)" aria-label="Meno">−</button><span>${st.reserve}</span><button onclick="stepSetting('reserve',1)" aria-label="Più">+</button></div></div>
+            <label class="check-row set-check"><input type="checkbox" ${st.debt ? 'checked' : ''} onchange="setSettingFlag('debt',this.checked)">
+                <span><b>Debito</b>: se sfori, il giorno dopo parti con qualche cucchiaino in meno (al massimo un quarto)</span></label>
+            <label class="check-row set-check"><input type="checkbox" ${st.calib ? 'checked' : ''} onchange="setSettingFlag('calib',this.checked)">
+                <span><b>Calibrazione</b>: dopo ogni impegno fatto, chiedimi quanto mi è costato davvero</span></label>
+        </div>`;
+}
+function energyChartHtml(){
+    const today = todayStr(), st = settings();
+    const days = Array.from({ length:14 }, (_, i) => shiftDate(today, i - 13));
+    const recs = days.map(iso => ({ iso, av:hasCheckin(iso) ? dayRec(iso).spoons : null, sp:spentOn(iso) }));
+    const withData = recs.filter(r => r.av !== null);
+    if (withData.length < 2) return `<div class="empty-note">Il grafico compare dopo qualche giorno di check-in.</div>`;
+    const top = Math.max(st.max, ...withData.map(r => Math.max(r.av, r.sp)), 1);
+    const bars = recs.map(r => {
+        const dt = parseLocalDate(r.iso);
+        const lbl = `<span class="ch-lbl${r.iso === today ? ' today' : ''}">${dt.getDate()}</span>`;
+        if (r.av === null) return `<div class="ch-col">${'<div class="ch-area"></div>'}${lbl}</div>`;
+        const over = r.sp > r.av;
+        return `<div class="ch-col" title="${fmtDate(r.iso)}: spesi ${r.sp} su ${r.av}"><div class="ch-area">
+            <div class="ch-av" style="height:${r.av / top * 100}%"></div>
+            <div class="ch-sp${over ? ' over' : ''}" style="height:${Math.min(r.sp, top) / top * 100}%"></div></div>${lbl}</div>`;
+    }).join('');
+    const avg = withData.reduce((n, r) => n + r.av, 0) / withData.length;
+    const overDays = withData.filter(r => r.sp > r.av).length;
+    // Giorno della settimana più faticoso (ultime 8 settimane, servono dati sufficienti)
+    let pattern = '';
+    const since = shiftDate(today, -56);
+    const byDow = {};
+    data.days.filter(d => typeof d.spoons === 'number' && d.id >= since).forEach(d => {
+        const w = isoDow(parseLocalDate(d.id));
+        (byDow[w] = byDow[w] || []).push(d.spoons);
+    });
+    const dows = Object.keys(byDow).filter(k => byDow[k].length >= 2);
+    if (dows.length >= 4) {
+        const avgOf = k => byDow[k].reduce((a, b) => a + b, 0) / byDow[k].length;
+        const worst = dows.reduce((a, b) => avgOf(a) <= avgOf(b) ? a : b);
+        const all = dows.reduce((n, k) => n + avgOf(k), 0) / dows.length;
+        if (all - avgOf(worst) >= 1) pattern = `<div class="e-hint">Di solito il giorno con meno energie è ${+worst === 7 ? 'la' : 'il'} ${DOW_FULL[worst % 7].toLowerCase()} (in media ${avgOf(worst).toFixed(1).replace('.', ',')}). Tienilo leggero.</div>`;
+    }
+    return `<div class="chart">${bars}</div>
+        <div class="energy-legend"><span><i class="lg avail"></i>Disponibili</span><span><i class="lg spent-fill"></i>Spesi</span><span><i class="lg over"></i>Sforato</span></div>
+        <div class="e-hint">Media disponibili: ${avg.toFixed(1).replace('.', ',')}. Giorni sforati: ${overDays} su ${withData.length}.</div>${pattern}`;
+}
+function stepSetting(key, dir, inCheckin){
+    const st = settings();
+    if (key === 'max') st.max = clamp(st.max + dir, 4, 40);
+    else st.reserve = clamp(st.reserve + dir, 0, Math.min(10, st.max - 1));
+    save();
+    if (inCheckin) { ci.manual = null; renderCheckin(); _pendingRender = true; }
+    else render();
+}
+function setSettingFlag(key, val){ settings()[key] = !!val; save(); }
+function toggleFixedToday(id){
+    const d = ensureDay(todayStr());
+    d.skipFixed = d.skipFixed.includes(id) ? d.skipFixed.filter(x => x !== id) : [...d.skipFixed, id];
+    save(); render();
+}
+function addExtra(){
+    const name = $('exName').value.trim();
+    if (!name) { $('exName').focus(); return; }
+    ensureDay(todayStr()).extras.push({ id:uid(), name, cost:clamp(parseInt($('exCost').value, 10) || 1, 1, OTHER_COST_MAX) });
+    save(); render();
+    showToast(`${name} aggiunto`);
+}
+function removeExtra(id){
+    const d = dayRec(todayStr());
+    if (!d) return;
+    d.extras = d.extras.filter(e => e.id !== id);
+    save(); render();
+}
+function openExtraQuick(){ setView('energy'); setTimeout(() => { const i = $('exName'); if (i) { i.scrollIntoView({ block:'center' }); i.focus(); } }, 50); }
+
+// ── Spese fisse ─────────────────────────────────────────────────────────────
+let editingFixedId = null, fxDays = [], fxCost = 1;
+function openFixedModal(id){
+    const f = id ? data.fixedCosts.find(x => x.id === id) : null;
+    editingFixedId = f ? f.id : null;
+    fxDays = f ? [...f.days] : [];
+    fxCost = f ? f.cost : 1;
+    $('fxTitle').textContent = f ? 'Spesa fissa' : 'Nuova spesa fissa';
+    $('fxName').value = f ? f.name : '';
+    $('fxDelete').classList.toggle('hidden', !f);
+    renderFixedForm();
+    openModal('modalFixed');
+}
+function renderFixedForm(){
+    $('fxCost').innerHTML = Array.from({ length:OTHER_COST_MAX }, (_, i) => i + 1).map(n => `<button type="button" class="chip${fxCost === n ? ' on' : ''}" onclick="fxCost=${n};renderFixedForm()">${n}</button>`).join('');
+    $('fxDays').innerHTML = [1,2,3,4,5,6,7].map(d => `<button type="button" class="chip${fxDays.includes(d) ? ' on' : ''}" onclick="toggleFxDay(${d})">${ISO_DOW_LABELS[d]}</button>`).join('');
+    $('fxHint').textContent = fxDays.length ? '' : 'Nessun giorno scelto: vale tutti i giorni.';
+}
+function toggleFxDay(d){ fxDays = fxDays.includes(d) ? fxDays.filter(x => x !== d) : [...fxDays, d].sort((a, b) => a - b); renderFixedForm(); }
+function saveFixed(){
+    const name = $('fxName').value.trim();
+    if (!name) { showToast('⚠ Dai un nome alla spesa fissa'); return; }
+    if (editingFixedId) {
+        const f = data.fixedCosts.find(x => x.id === editingFixedId);
+        if (f) Object.assign(f, { name, cost:fxCost, days:[...fxDays] });
+    } else data.fixedCosts.push({ id:uid(), name, cost:fxCost, days:[...fxDays] });
+    save(); closeModal('modalFixed'); render();
+}
+function deleteFixed(){
+    const f = data.fixedCosts.find(x => x.id === editingFixedId);
+    if (!f) return;
+    confirmDialog({ title:'Eliminare?', msg:`“${f.name}” non verrà più conteggiata.` }, () => {
+        data.fixedCosts = data.fixedCosts.filter(x => x.id !== f.id);
+        save(); closeModal('modalFixed'); render();
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1422,7 +1956,8 @@ function mergeData(local, remoteRaw){
         out[c] = [];
         ids.forEach(id => {
             const l = L.get(id), r = R.get(id);
-            const pick = !l ? r : !r ? l : ((r._mod || 0) > (l._mod || 0) ? r : l);
+            let pick = !l ? r : !r ? l : ((r._mod || 0) > (l._mod || 0) ? r : l);
+            if (c === 'days' && l && r) pick = mergeDay(pick, pick === l ? r : l);
             if (pick && (pick._mod || 0) > (tombs[c + ':' + id] || 0)) out[c].push(pick);
         });
     });
@@ -1438,6 +1973,17 @@ function mergeData(local, remoteRaw){
     return { merged: normalizeData(out), remote };
 }
 
+// Stesso giorno toccato da due dispositivi (es. check-in sul telefono, impegno fatto
+// sul PC): parte dalla versione più recente ma non perde i compiti fatti né il check-in.
+function mergeDay(newer, older){
+    const m = JSON.parse(JSON.stringify(newer));
+    const seen = new Set(m.done.map(e => e.ts + ':' + e.taskId));
+    older.done.forEach(e => { if (!seen.has(e.ts + ':' + e.taskId)) m.done.push(e); });
+    if (typeof m.spoons !== 'number' && typeof older.spoons === 'number') {
+        ['sleep','body','mind','spoons','debt'].forEach(k => { m[k] = older[k]; });
+    }
+    return m;
+}
 function getSyncStatus(){ return localStorage.getItem(SYNC_STATUS_KEY) || 'none'; }
 function setSyncStatus(s){ localStorage.setItem(SYNC_STATUS_KEY, s); updateSyncBtn(s); }
 function updateSyncBtn(status){
@@ -1586,7 +2132,7 @@ document.addEventListener('keydown', e => {
 document.addEventListener('focusout', flushPendingRender);
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
-    if (_renderDay !== todayStr()) renderWhenIdle(); // è passata la mezzanotte
+    if (_renderDay !== todayStr()) { renderWhenIdle(); setTimeout(maybeCheckin, 300); } // è passata la mezzanotte
     if (syncUrl && !syncInProgress && Date.now() - lastSyncAt > 60000) doSync(true);
 });
 window.addEventListener('online', () => { if (syncUrl) doSync(true); });
@@ -1605,7 +2151,9 @@ function init(){
     render();
     updateSyncBtn(getSyncStatus());
     if (_loadError) showToast('⚠ Dati locali illeggibili: copia salvata, ripristina da sync o backup');
-    if (syncUrl) setTimeout(() => doSync(true), 1500);
+    // Il check-in parte dopo la prima sync, così non lo rifai se l'hai già fatto sull'altro dispositivo
+    if (syncUrl) setTimeout(async () => { await doSync(true); maybeCheckin(); }, 1200);
+    else setTimeout(maybeCheckin, 400);
     setInterval(() => {
         if (syncUrl && !syncInProgress && document.visibilityState === 'visible') doSync(true);
         if (_renderDay !== todayStr()) renderWhenIdle();

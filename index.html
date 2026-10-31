@@ -39,10 +39,13 @@
     <input type="text" id="tTitle" placeholder="Cosa c'è da fare?" maxlength="140" autocomplete="off">
     <div class="field-row">
         <select class="styled-select" id="tCat" onchange="fillSubSelect()" aria-label="Categoria"></select>
-        <select class="styled-select" id="tSub" aria-label="Sottocategoria"></select>
+        <select class="styled-select" id="tSub" aria-label="Sottocategoria" onchange="renderFormCost()"></select>
     </div>
     <div class="field-label">Urgenza</div>
     <div class="triage-box" id="tUrg"></div>
+    <div class="field-label">Cucchiaini</div>
+    <div class="chip-row" id="tCost" style="margin-bottom:4px;"></div>
+    <div class="hint" id="tCostHint" style="color:var(--text-dim);"></div>
     <div class="field-label">Quando</div>
     <div class="chip-row">
         <button type="button" class="chip" onclick="setTaskDateQuick(0)">Oggi</button>
@@ -74,6 +77,24 @@
         <button class="btn btn-secondary" onclick="closeModal('modalTask')">Annulla</button>
     </div>
     <button class="btn btn-danger-ghost hidden" id="tDeleteBtn" onclick="deleteTaskFromModal()">Elimina impegno</button>
+</div></div>
+
+<!-- Energie -->
+<div id="modalCheckin" class="modal-overlay hidden"><div class="modal-card" id="checkinBody"></div></div>
+<div id="modalCalib" class="modal-overlay hidden"><div class="modal-card" id="calibBody"></div></div>
+<div id="modalFixed" class="modal-overlay hidden"><div class="modal-card">
+    <div class="modal-title" id="fxTitle">Spesa fissa</div>
+    <input type="text" id="fxName" placeholder="Es. igiene personale, lezioni, lavoro" maxlength="50" data-enter="saveFixed">
+    <div class="field-label">Cucchiaini</div>
+    <div class="chip-row" id="fxCost"></div>
+    <div class="field-label">Giorni</div>
+    <div class="chip-row" id="fxDays"></div>
+    <div class="hint" id="fxHint"></div>
+    <div class="modal-btns">
+        <button class="btn btn-primary" onclick="saveFixed()">Salva</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalFixed')">Annulla</button>
+    </div>
+    <button class="btn btn-danger-ghost hidden" id="fxDelete" onclick="deleteFixed()">Elimina</button>
 </div></div>
 
 <!-- Contenitori dinamici -->
