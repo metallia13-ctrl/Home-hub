@@ -15,8 +15,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,400..700,100&family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css">
-    <script src="app.js" defer></script>
+    <link rel="stylesheet" href="style.css?v=1.4">
+    <script src="app.js?v=1.4" defer></script>
 </head>
 <body>
 <div id="toast" role="status" aria-live="polite"></div>
@@ -40,9 +40,9 @@
     <button class="nav-item" id="nav_tidy" onclick="setSection('tidy')">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9.5 2.5h5"/></svg>
         <span>Riordino</span><i class="nav-badge" id="badgeTidy"></i></button>
-    <button class="nav-item" id="nav_projects" onclick="setSection('projects')">
+    <button class="nav-item" id="nav_rooms" onclick="setSection('rooms')">
         <svg viewBox="0 0 24 24"><path d="M3.5 11L12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5h4v5"/></svg>
-        <span>Progetti</span><i class="nav-badge" id="badgeProjects"></i></button>
+        <span>Stanze</span><i class="nav-badge" id="badgeRooms"></i></button>
     <button class="nav-item" id="nav_shop" onclick="setSection('shop')">
         <svg viewBox="0 0 24 24"><path d="M4 9h16l-1.6 10.2a1.5 1.5 0 0 1-1.5 1.3H7.1a1.5 1.5 0 0 1-1.5-1.3L4 9z"/><path d="M8.5 9l3.5-5 3.5 5"/></svg>
         <span>Spesa</span><i class="nav-badge" id="badgeShop"></i></button>
@@ -50,13 +50,13 @@
 
 <!-- Nuovo / modifica impegno -->
 <div id="modalTask" class="modal-overlay hidden"><div class="modal-card">
-    <div class="modal-title" id="taskModalTitle">Nuovo impegno</div>
+    <div class="modal-title"><span id="taskModalTitle">Nuovo impegno</span> <button class="help-btn" onclick="openHelp('task')" aria-label="Aiuto">?</button></div>
     <input type="text" id="tTitle" placeholder="Cosa c'è da fare?" maxlength="140" autocomplete="off">
     <div class="field-row">
         <select class="styled-select" id="tCat" onchange="fillSubSelect()" aria-label="Categoria"></select>
         <select class="styled-select" id="tSub" aria-label="Sottocategoria" onchange="renderFormCost()"></select>
     </div>
-    <div id="tProjectRow"><select class="styled-select" id="tProject" aria-label="Progetto"></select></div>
+    <select class="styled-select" id="tRoom" aria-label="Stanza"></select>
     <div class="field-label">Urgenza</div>
     <div class="triage-box" id="tUrg"></div>
     <div class="field-label">Cucchiaini</div>
@@ -113,17 +113,17 @@
     <button class="btn btn-danger-ghost hidden" id="fxDelete" onclick="deleteFixed()">Elimina</button>
 </div></div>
 
-<!-- Progetti e stanze -->
-<div id="modalProject" class="modal-overlay hidden"><div class="modal-card">
-    <div class="modal-title" id="pjTitle">Nuovo progetto</div>
-    <input type="text" id="pjName" placeholder="Es. sistemare la camera da letto" maxlength="80" data-enter="saveProject">
-    <select class="styled-select" id="pjRoom" aria-label="Stanza"></select>
-    <textarea id="pjGoal" placeholder="Come lo immagini finito? (facoltativo)"></textarea>
+<!-- Stanze e foto -->
+<div id="modalNewPhoto" class="modal-overlay hidden"><div class="modal-card">
+    <div class="modal-title">Nuova foto</div>
+    <img id="npPreview" class="np-preview" alt="Anteprima">
+    <div class="field-label">Che foto è?</div>
+    <div class="chip-row" id="npKinds"></div>
+    <input type="text" id="npCaption" placeholder="Didascalia (es. angolo del Kallax)" maxlength="120" data-enter="saveNewPhoto">
     <div class="modal-btns">
-        <button class="btn btn-primary" onclick="saveProject()">Salva</button>
-        <button class="btn btn-secondary" onclick="closeModal('modalProject')">Annulla</button>
+        <button class="btn btn-primary" onclick="saveNewPhoto()">Salva</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalNewPhoto')">Annulla</button>
     </div>
-    <button class="btn btn-danger-ghost hidden" id="pjDelete" onclick="deleteProject()">Elimina progetto</button>
 </div></div>
 <div id="modalRooms" class="modal-overlay hidden"><div class="modal-card">
     <div class="modal-title">Stanze</div>
@@ -163,12 +163,42 @@
 
 <div id="modalDoc" class="modal-overlay hidden"><div class="modal-card" id="docBody"></div></div>
 <div id="modalSync" class="modal-overlay hidden"><div class="modal-card">
-    <div class="modal-title">Sync e backup</div>
+    <div class="modal-title">Sync e backup <button class="help-btn" onclick="openHelp('sync')" aria-label="Aiuto">?</button></div>
     <div id="syncModalBody"></div>
 </div></div>
 
+<!-- Visore/editor delle foto a schermo intero -->
+<div id="photoViewer" class="viewer hidden">
+    <div class="vw-top">
+        <button class="vw-icon" onclick="closeViewer()" aria-label="Chiudi">‹</button>
+        <input type="text" id="vwCaption" placeholder="Didascalia" maxlength="120">
+        <select id="vwKind" aria-label="Tipo di foto"></select>
+        <button class="vw-icon" onclick="fitView()" aria-label="Adatta allo schermo">⤢</button>
+        <button class="help-btn" onclick="openHelp('photo')" aria-label="Aiuto">?</button>
+    </div>
+    <div class="vw-stage" id="vwStage">
+        <div class="vw-canvas" id="vwCanvas"><img id="vwImg" alt=""><svg id="vwSvg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+        <div class="vw-missing hidden" id="vwMissing">La foto non è ancora su questo dispositivo. Collega la sync e aggiorna lo script per scaricarla da Drive.</div>
+    </div>
+    <div class="vw-bar" id="vwBar"></div>
+</div>
+<input type="file" id="photoInput" accept="image/*" onchange="handlePhotoPick(event)">
+
+<!-- Sopra al visore: testo, aiuto, guida -->
+<div id="modalText" class="modal-overlay over-viewer hidden"><div class="modal-card">
+    <div class="modal-title">Scrivi sulla foto</div>
+    <input type="text" id="txtInput" placeholder="Es. phon, piastra, spazzole" maxlength="80" data-enter="saveText">
+    <div class="modal-btns">
+        <button class="btn btn-primary" onclick="saveText()">Salva</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalText')">Annulla</button>
+    </div>
+    <button class="btn btn-danger-ghost hidden" id="txtDelete" onclick="deleteText()">Elimina scritta</button>
+</div></div>
+<div id="modalHelp" class="modal-overlay over-viewer hidden"><div class="modal-card" id="helpBody"></div></div>
+<div id="modalTour" class="modal-overlay over-viewer hidden"><div class="modal-card tour-card" id="tourBody"></div></div>
+
 <!-- Conferma generica: resta ultimo, così compare sopra gli altri modali -->
-<div id="modalConfirm" class="modal-overlay hidden"><div class="modal-card" style="text-align:center;">
+<div id="modalConfirm" class="modal-overlay over-viewer hidden" style="z-index:8000;"><div class="modal-card" style="text-align:center;">
     <div class="modal-title" id="confirmTitle" style="color:var(--danger);">Eliminare?</div>
     <p class="confirm-msg" id="confirmMsg">Questa azione non è reversibile.</p>
     <div class="modal-btns">

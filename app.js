@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  CASA HUB — app.js (v1.3)
+//  CASA HUB — app.js (v1.4)
 //  Impegni di casa (urgenza, categorie, ricorrenze, rinvii), energie con la
 //  teoria dei cucchiaini, lista della spesa
 // ═══════════════════════════════════════════════════════════════════════════
@@ -22,8 +22,8 @@ const MONTHS_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Lugl
 const ISO_DOW_LABELS = { 1:'Lun', 2:'Mar', 3:'Mer', 4:'Gio', 5:'Ven', 6:'Sab', 7:'Dom' };
 const URG_LABEL = { 1:'Normale', 2:'Importante', 3:'Urgente' };
 const REC_UNITS = ['day','week','month','year'];
-const COLLS = ['tasks','taskCats','shopCats','shopItems','days','fixedCosts','settings','rooms','projects','tidy'];
-const SECTIONS = ['tasks','tidy','projects','shop'];
+const COLLS = ['tasks','taskCats','shopCats','shopItems','days','fixedCosts','settings','rooms','projects','tidy','photos'];
+const SECTIONS = ['tasks','tidy','rooms','shop'];
 const VIEWS = ['today','day','week','month','list','energy'];
 const TASK_COST_MAX = 4, OTHER_COST_MAX = 8;
 const DAY_MS = 864e5;
@@ -127,7 +127,7 @@ const DEFAULT_SHOP = [
     ['pulizia', 'Casa e pulizia', ['Detersivo piatti','Detersivo lavatrice','Carta igienica','Carta da cucina','Sacchi spazzatura','Spugne']],
     ['igiene', 'Igiene personale', ['Shampoo','Bagnoschiuma','Dentifricio','Deodorante']],
 ];
-function emptyData(){ return { v:1, tasks:[], taskCats:[], shopCats:[], shopItems:[], days:[], fixedCosts:[], settings:[], rooms:[], projects:[], tidy:[], deleted:{}, lastModified:0 }; }
+function emptyData(){ return { v:1, tasks:[], taskCats:[], shopCats:[], shopItems:[], days:[], fixedCosts:[], settings:[], rooms:[], projects:[], tidy:[], photos:[], deleted:{}, lastModified:0 }; }
 function seedDefaults(d){
     d.taskCats = DEFAULT_TASK_CATS.map(([k, name, subs], i) => ({
         id:'d_tc_' + k, name, color:CAT_COLORS[i % CAT_COLORS.length], order:i,
@@ -188,6 +188,7 @@ function normalizeData(d){
         t.doneAt = isIso(t.doneAt) ? t.doneAt : null;
         t.cost = normCost(t.cost, 0, TASK_COST_MAX); // null = predefinito della categoria; 0 = non costa energie
         t.projectId = t.projectId ? String(t.projectId) : null;
+        t.roomId = t.roomId ? String(t.roomId) : null;
         t.order = typeof t.order === 'number' ? t.order : (t.created || 0);
     });
     d.taskCats.forEach((c, i) => {
@@ -234,7 +235,45 @@ function normalizeData(d){
     st.tidyDaily = st.tidyDaily !== false;
     // ── Stanze, progetti, riordino ──
     if (migrateRooms && !d.rooms.length) d.rooms = defaultRooms();
-    d.rooms.forEach((r, i) => { r.name = String(r.name || '').trim() || 'Stanza'; if (typeof r.order !== 'number') r.order = i; });
+    // v1.4: i Progetti diventano liste delle Stanze. ID fissi e _mod:1, così ogni
+    // dispositivo fa la stessa conversione senza creare doppioni in sync.
+    d.tasks.forEach(t => {
+        if (!t.projectId || t.roomId) return;
+        const pj = d.projects.find(x => x.id === t.projectId);
+        if (pj && pj.roomId && d.rooms.some(r => r.id === pj.roomId)) t.roomId = pj.roomId;
+        else if (pj) {
+            const rid = 'pr_' + pj.id;
+            if (!d.rooms.some(r => r.id === rid)) d.rooms.push({ id:rid, name:pj.name, order:d.rooms.length, notes:pj.goal || '', _mod:1 });
+            t.roomId = rid;
+        }
+        t.projectId = null;
+    });
+    d.projects.forEach(pj => {
+        const r = pj.roomId && d.rooms.find(x => x.id === pj.roomId);
+        if (r && pj.goal && !r.notes && !pj.goalMoved) { r.notes = pj.goal; pj.goalMoved = true; }
+    });
+    d.rooms.forEach((r, i) => {
+        r.name = String(r.name || '').trim() || 'Stanza';
+        if (typeof r.order !== 'number') r.order = i;
+        r.notes = typeof r.notes === 'string' ? r.notes : '';
+    });
+    const roomIds = new Set(d.rooms.map(r => r.id));
+    d.photos = d.photos.filter(ph => ph.roomId && roomIds.has(String(ph.roomId)));
+    const hex = c => /^#[0-9a-f]{6}$/i.test(c) ? c : '#ffd54a';
+    const num = (v, def) => { const n = +v; return isFinite(n) ? n : def; };
+    d.photos.forEach(ph => {
+        ph.roomId = String(ph.roomId);
+        ph.kind = ['now','goal','idea'].includes(ph.kind) ? ph.kind : 'now';
+        ph.caption = String(ph.caption || '').slice(0, 120);
+        ph.w = clamp(parseInt(ph.w, 10) || 1200, 1, 5000);
+        ph.h = clamp(parseInt(ph.h, 10) || 900, 1, 5000);
+        ph.driveId = ph.driveId ? String(ph.driveId) : null;
+        ph.created = num(ph.created, 0);
+        ph.strokes = Array.isArray(ph.strokes) ? ph.strokes.filter(x => x && Array.isArray(x.pts) && x.pts.length)
+            .map(x => ({ c:hex(x.c), w:clamp(num(x.w, 4), 0.2, 200), pts:x.pts.filter(q => Array.isArray(q) && q.length >= 2).map(q => [num(q[0], 0), num(q[1], 0)]) }))
+            .filter(x => x.pts.length) : [];
+        ph.texts = Array.isArray(ph.texts) ? ph.texts.filter(x => x && x.t).map(x => ({ x:num(x.x, 0), y:num(x.y, 0), t:String(x.t).slice(0, 80), c:hex(x.c), fs:clamp(num(x.fs, 40), 2, 600) })) : [];
+    });
     d.projects.forEach((p, i) => {
         p.name = String(p.name || '').trim() || 'Progetto';
         p.roomId = p.roomId ? String(p.roomId) : null;
@@ -279,14 +318,17 @@ function loadUi(){
     let u = {};
     try { u = JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch (_) {}
     return {
-        section: SECTIONS.includes(u.section) ? u.section : 'tasks',
+        section: u.section === 'projects' ? 'rooms' : SECTIONS.includes(u.section) ? u.section : 'tasks',
         view: VIEWS.includes(u.view) ? u.view : 'today',
         shopFilter: u.shopFilter === 'need' ? 'need' : 'all',
         collapsed: (u.collapsed && typeof u.collapsed === 'object') ? u.collapsed : {},
         showDone: !!u.showDone,
         lastShopCat: u.lastShopCat || null,
         checkinSkip: u.checkinSkip || null,
-        projectId: u.projectId || null,
+        roomId: u.roomId || null,
+        photoFilter: ['all','now','goal','idea'].includes(u.photoFilter) ? u.photoFilter : 'all',
+        tourSeen: !!u.tourSeen,
+        penColor: u.penColor || null, penSize: [1, 2, 4].includes(u.penSize) ? u.penSize : 2, penOnly: !!u.penOnly,
         showDoneProjects: !!u.showDoneProjects,
         tidyRoom: u.tidyRoom || null,
         timer: (u.timer && typeof u.timer === 'object' && u.timer.total) ? u.timer : null,
@@ -360,7 +402,7 @@ function closeModal(id){
     $(id).classList.add('hidden');
     flushPendingRender();
 }
-function anyModalOpen(){ return !!document.querySelector('.modal-overlay:not(.hidden)'); }
+function anyModalOpen(){ return !!document.querySelector('.modal-overlay:not(.hidden)') || (typeof vw !== 'undefined' && !!vw); }
 function confirmDialog(opts, onOk){
     const { title = 'Eliminare?', msg = 'Questa azione non è reversibile.', ok = 'Elimina', danger = true } = opts || {};
     const t = $('confirmTitle');
@@ -407,7 +449,7 @@ function toggleTheme(){
 
 // ── Navigazione ─────────────────────────────────────────────────────────────
 function setSection(s){
-    if (s === 'projects' && ui.section === 'projects') ui.projectId = null; // secondo tocco: torna all'elenco
+    if (s === 'rooms' && ui.section === 'rooms') ui.roomId = null; // secondo tocco: torna all'elenco
     ui.section = s; saveUi();
     window.scrollTo(0, 0);
     render();
@@ -425,7 +467,7 @@ function render(){
     $('fabAdd').classList.toggle('hidden', ui.section !== 'tasks');
     const app = $('appContent');
     if (ui.section === 'shop') renderShop(app);
-    else if (ui.section === 'projects') renderProjects(app);
+    else if (ui.section === 'rooms') renderRooms(app);
     else if (ui.section === 'tidy') renderTidy(app);
     else renderTasks(app);
     updateBadges();
@@ -439,8 +481,6 @@ function updateBadges(){
     if (bt) { bt.textContent = due || ''; bt.classList.toggle('alert', late > 0); bt.title = late ? `${late} in ritardo` : ''; }
     if (bs) { const n = data.shopItems.filter(i => i.need).length; bs.textContent = n || ''; }
     if (bd) { bd.textContent = tidyBadgeText(); bd.classList.toggle('ok', !!tidyOn(today).length && !ui.timer); }
-    const bp = $('badgeProjects');
-    if (bp) bp.textContent = data.projects.filter(p => p.status === 'active').length || '';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -538,8 +578,8 @@ function taskMetaHtml(t, opts = {}){
     const parts = [];
     const today = todayStr();
     parts.push(`<span class="m-spoon" title="Cucchiaini">🥄${fmtSp(effectiveCost(t))}</span>`);
-    const pj = t.projectId ? getProject(t.projectId) : null;
-    if (pj && !opts.hideProject) parts.push(`<span>◆ ${escHtml(pj.name)}</span>`);
+    const rm = t.roomId ? getRoom(t.roomId) : null;
+    if (rm) parts.push(`<span>⌂ ${escHtml(rm.name)}</span>`);
     if (opts.showDate && t.date) {
         const late = t.date < today;
         parts.push(`<span class="${late ? 'm-late' : ''}">${late ? 'scaduto ' : ''}${escHtml(fmtRel(t.date))}${t.time ? ' ' + t.time : ''}</span>`);
@@ -578,7 +618,7 @@ function itemsHtml(items, empty = 'Niente in programma'){
 function renderTasks(app){
     const v = ui.view;
     const vb = (id, label) => `<button class="view-btn${v === id ? ' active' : ''}" onclick="setView('${id}')">${label}</button>`;
-    app.innerHTML = `<div class="view-toggle">${vb('today','Oggi')}${vb('day','Giorno')}${vb('week','Settimana')}${vb('month','Mese')}${vb('list','Elenco')}${vb('energy','Energia')}</div>
+    app.innerHTML = `<div class="view-toggle">${vb('today','Oggi')}${vb('day','Giorno')}${vb('week','Settimana')}${vb('month','Mese')}${vb('list','Elenco')}${vb('energy','Energia')}${helpBtn(ui.view === 'energy' ? 'energy' : 'tasks')}</div>
         <div id="tasksArea"></div>`;
     const tg = app.querySelector('.view-toggle'), act = tg && tg.querySelector('.view-btn.active');
     if (act) tg.scrollLeft = Math.max(0, act.offsetLeft - tg.offsetLeft - 24);
@@ -605,7 +645,7 @@ function renderToday(area){
     const open = openTasks();
     const late = open.filter(t => t.date && t.date < today).sort(cmpDateUrg);
     const todays = open.filter(t => t.date === today).sort(cmpUrgTime);
-    const undated = open.filter(t => !t.date && !t.projectId).sort(cmpUrgTime);
+    const undated = open.filter(t => !t.date && !t.roomId).sort(cmpUrgTime);
     const tomorrows = open.filter(t => t.date === tomorrow).sort(cmpUrgTime);
     const often = open.filter(t => t.postponed >= 3).sort((a, b) => b.postponed - a.postponed);
     const summary = [];
@@ -722,7 +762,7 @@ function openDayFromDate(ds){
 
 // ── Elenco per categoria ────────────────────────────────────────────────────
 function renderListView(area){
-    const open = openTasks().filter(t => t.date || !t.projectId);
+    const open = openTasks().filter(t => t.date || !t.roomId);
     const cats = sortedCats();
     const catIds = new Set(cats.map(c => c.id));
     let html = '';
@@ -742,7 +782,7 @@ function renderListView(area){
     html += groupHtml('Senza categoria', 'var(--text-dim)', open.filter(t => !t.catId || !catIds.has(t.catId)), []);
     if (!html) html = `<div class="empty-note">Nessun impegno aperto. Tocca + per aggiungerne uno.</div>`;
 
-    const done = data.tasks.filter(t => t.done && !t.projectId).sort((a, b) => (b.doneAt || '').localeCompare(a.doneAt || ''));
+    const done = data.tasks.filter(t => t.done && !t.roomId).sort((a, b) => (b.doneAt || '').localeCompare(a.doneAt || ''));
     const doneHtml = done.length ? `<div class="block" style="margin-top:8px;">
         <div class="block-title"><button class="link-btn" onclick="toggleShowDone()">${ui.showDone ? '▾' : '▸'} Completati (${done.length})</button>
             ${ui.showDone ? `<button class="link-btn danger" onclick="clearDoneTasks()">Svuota</button>` : ''}</div>
@@ -752,10 +792,10 @@ function renderListView(area){
 }
 function toggleShowDone(){ ui.showDone = !ui.showDone; saveUi(); renderTasksArea(); }
 function clearDoneTasks(){
-    // I passi dei progetti restano: servono per l'avanzamento
-    const n = data.tasks.filter(t => t.done && !t.projectId).length;
-    confirmDialog({ title:'Svuotare?', msg:`Elimino ${n} ${n === 1 ? 'impegno completato' : 'impegni completati'}. Quelli ricorrenti e i passi dei progetti non vengono toccati.`, ok:'Svuota' }, () => {
-        data.tasks = data.tasks.filter(t => !t.done || t.projectId);
+    // Le cose fatte delle Stanze restano lì: servono per l'avanzamento della stanza
+    const n = data.tasks.filter(t => t.done && !t.roomId).length;
+    confirmDialog({ title:'Svuotare?', msg:`Elimino ${n} ${n === 1 ? 'impegno completato' : 'impegni completati'}. Quelli ricorrenti e le liste delle stanze non vengono toccati.`, ok:'Svuota' }, () => {
+        data.tasks = data.tasks.filter(t => !t.done || t.roomId);
         save(); renderTasksArea();
     });
 }
@@ -878,8 +918,8 @@ function openTaskSheet(id, ghostDate){
     rows.push(['Categoria', c ? escHtml(c.name + (s ? ' › ' + s.name : '')) : 'Nessuna']);
     rows.push(['Urgenza', `<span style="color:${taskColor(t)}">${URG_LABEL[t.urg]}</span>`]);
     rows.push(['Cucchiaini', `🥄 ${fmtSp(effectiveCost(t))}${t.cost !== null ? '' : ' <span style="color:var(--text-dim)">(predefinito)</span>'}`]);
-    const pj = t.projectId ? getProject(t.projectId) : null;
-    if (pj) rows.push(['Progetto', escHtml(pj.name)]);
+    const rm = t.roomId ? getRoom(t.roomId) : null;
+    if (rm) rows.push(['Stanza', escHtml(rm.name)]);
     if (t.rec) rows.push(['Si ripete', escHtml(recLabel(t.rec))]);
     if (t.log.length) rows.push(['Ultima volta', escHtml(fmtDate(t.log[0]))]);
     if (t.postponed) rows.push(['Rimandato', `<span style="color:var(--warning)">${t.postponed} ${t.postponed === 1 ? 'volta' : 'volte'}</span>`]);
@@ -1030,14 +1070,14 @@ function openTaskModal(id){
     $('taskModalTitle').textContent = t ? 'Modifica impegno' : 'Nuovo impegno';
     $('tTitle').value = t ? t.title : '';
     formCost = t ? t.cost : null;
-    fillProjectSelect(t ? t.projectId : (ui.section === 'projects' ? ui.projectId : null));
+    fillRoomSelect(t ? t.roomId : (ui.section === 'rooms' ? ui.roomId : null));
     fillCatSelect(t ? t.catId : '');
     fillSubSelect(t ? t.subId : '');
     formUrg = t ? t.urg : 1;
     renderFormUrg();
     let defDate = todayStr();
     if (!t && ui.section === 'tasks' && ui.view === 'day') defDate = selectedDayIso();
-    if (!t && ui.section === 'projects') defDate = ''; // i passi di un progetto nascono senza data
+    if (!t && ui.section === 'rooms' && ui.roomId) defDate = ''; // le cose di una stanza nascono senza data
     $('tDate').value = t ? (t.date || '') : defDate;
     $('tTime').value = t && t.time ? t.time : '';
     $('tRecUnit').value = t && t.rec ? t.rec.unit : '';
@@ -1061,8 +1101,8 @@ function saveTask(){
     }
     const catId = $('tCat').value || null;
     const subId = catId && !$('tSub').classList.contains('hidden') ? ($('tSub').value || null) : null;
-    const projectId = $('tProject').value || null;
-    const fields = { title, catId, subId, urg:formUrg, cost:formCost, projectId, date, time:parseTimeInput($('tTime').value), notes:$('tNotes').value.trim(), rec };
+    const roomId = $('tRoom').value || null;
+    const fields = { title, catId, subId, urg:formUrg, cost:formCost, roomId, date, time:parseTimeInput($('tTime').value), notes:$('tNotes').value.trim(), rec };
     if (editingTaskId) {
         const t = findTask(editingTaskId);
         if (!t) { closeModal('modalTask'); return; }
@@ -1319,7 +1359,7 @@ function renderCheckin(){
     if (ci.debt) parts.push(`−${ci.debt} per ieri`);
     if (ci.manual !== null && ci.manual !== p.result) parts.push(`${ci.manual > p.result ? '+' : '−'}${Math.abs(ci.manual - p.result)} correzione tua`);
     $('checkinBody').innerHTML = `
-        <div class="modal-title">Come va oggi?</div>
+        <div class="modal-title">Come va oggi? ${helpBtn('checkin')}</div>
         ${ci.first ? `<div class="ci-first">
             <p>Prima volta: quanti cucchiaini hai in una giornata <b>buona</b>? Di solito si parte da 12. Puoi cambiarlo quando vuoi in Energia.</p>
             <div class="stepper"><button onclick="stepSetting('max',-1,true)" aria-label="Meno">−</button><span>${settings().max}</span><button onclick="stepSetting('max',1,true)" aria-label="Più">+</button></div>
@@ -1423,7 +1463,7 @@ function energyCardHtml(){
     return `<div class="energy-card">
         <div class="energy-top">
             <div><span class="energy-num">${fmtSp(Math.max(0, left))}</span><span class="energy-of">${qr(left) === 1 ? 'cucchiaino rimasto' : 'cucchiaini rimasti'} su ${S}</span></div>
-            <button class="link-btn" onclick="setView('energy')">Dettagli</button>
+            <span class="energy-acts">${helpBtn('energy')}<button class="link-btn" onclick="setView('energy')">Dettagli</button></span>
         </div>
         <div class="spoon-bar" aria-label="Spesi ${fmtSp(used)}, in programma ${fmtSp(planned)}, disponibili ${S}">${cells}</div>
         <div class="energy-legend"><span><i class="lg spent"></i>Spesi ${fmtSp(used)}</span><span><i class="lg planned"></i>In programma ${fmtSp(planned)}</span><span><i class="lg free"></i>Liberi</span>${R ? `<span><i class="lg reserve"></i>Riserva ${R}</span>` : ''}</div>
@@ -1657,7 +1697,7 @@ function addRoom(){
     const name = $('newRoom').value.trim();
     if (!name) return;
     const maxO = data.rooms.reduce((m, r) => Math.max(m, r.order), -1);
-    data.rooms.push({ id:uid(), name, order:maxO + 1 });
+    data.rooms.push({ id:uid(), name, order:maxO + 1, notes:'' });
     roomsChanged();
 }
 function renameRoom(id, v){ const r = getRoom(id); v = String(v).trim(); if (r && v) { r.name = v; save(); _pendingRender = true; } }
@@ -1671,8 +1711,14 @@ function moveRoom(id, dir){
 function deleteRoom(id){
     const r = getRoom(id);
     if (!r) return;
-    confirmDialog({ title:'Eliminare?', msg:`La stanza “${r.name}” sparisce dall’elenco. Progetti e storico del riordino restano.` }, () => {
+    const nt = data.tasks.filter(t => t.roomId === id).length, np = data.photos.filter(p => p.roomId === id).length;
+    const what = [nt ? `${nt} ${nt === 1 ? 'cosa da fare' : 'cose da fare'}` : '', np ? `${np} foto` : ''].filter(Boolean).join(' e ');
+    confirmDialog({ title:'Eliminare?', msg:`La stanza “${r.name}” verrà eliminata${what ? `, con ${what}` : ''}. Lo storico del riordino resta.` }, () => {
         data.projects.forEach(p => { if (p.roomId === id) p.roomId = null; });
+        data.tasks = data.tasks.filter(t => t.roomId !== id);
+        data.photos.filter(p => p.roomId === id).forEach(p => { idbDel('blobs', p.id); idbDel('thumbs', p.id); deleteDrivePhoto(p.driveId); });
+        data.photos = data.photos.filter(p => p.roomId !== id);
+        if (ui.roomId === id) { ui.roomId = null; saveUi(); }
         data.rooms = data.rooms.filter(x => x.id !== id);
         if (ui.tidyRoom === id) { ui.tidyRoom = null; saveUi(); }
         roomsChanged();
@@ -1680,49 +1726,56 @@ function deleteRoom(id){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  PROGETTI (sistemare le stanze passo dopo passo)
+//  STANZE: cose da fare, foto, disegni e scritte sopra le foto
 // ═══════════════════════════════════════════════════════════════════════════
-function getProject(id){ return id ? data.projects.find(p => p.id === id) || null : null; }
-function projectSteps(id){ return data.tasks.filter(t => t.projectId === id).sort((a, b) => (a.order - b.order) || (a.created || 0) - (b.created || 0)); }
-function projectStats(id){
-    const steps = projectSteps(id), done = steps.filter(t => t.done || (t.rec && t.log.length));
-    const open = steps.filter(t => !t.done && !t.rec);
-    return { total:steps.length, done:done.length, left:qr(open.reduce((n, t) => n + effectiveCost(t), 0)), next:open[0] || null };
+const PHOTO_KINDS = { now:'Adesso', goal:'Obiettivo', idea:'Idea' };
+const PEN_COLORS = ['#ffffff','#ffd54a','#ff5a5f','#7ed957','#4aa8ff','#111111'];
+const PEN_SIZES = { 1:'Fine', 2:'Medio', 4:'Grosso' };
+function roomTasks(id){ return data.tasks.filter(t => t.roomId === id).sort((a, b) => (a.order - b.order) || ((a.created || 0) - (b.created || 0))); }
+function roomPhotos(id){ return data.photos.filter(p => p.roomId === id).sort((a, b) => b.created - a.created); }
+function roomCover(id){ const ph = roomPhotos(id); return ph.find(p => p.kind === 'goal') || ph.find(p => p.kind === 'idea') || ph[0] || null; }
+function roomStats(id){
+    const ts = roomTasks(id), open = ts.filter(t => !t.done);
+    return { total:ts.length, open:open.length, done:ts.length - open.length, left:qr(open.reduce((n, t) => n + effectiveCost(t), 0)) };
 }
-function fillProjectSelect(selected){
-    const sel = $('tProject');
-    const list = data.projects.filter(p => p.status !== 'done' || p.id === selected).sort((a, b) => a.order - b.order);
-    sel.innerHTML = `<option value="">Nessun progetto</option>` +
-        list.map(p => `<option value="${escHtml(p.id)}"${p.id === selected ? ' selected' : ''}>${escHtml(p.name)}</option>`).join('');
-    $('tProjectRow').classList.toggle('hidden', !list.length);
+function getPhoto(id){ return data.photos.find(p => p.id === id) || null; }
+function fillRoomSelect(selected){
+    const sel = $('tRoom');
+    sel.innerHTML = `<option value="">Nessuna stanza</option>` + sortedRooms().map(r => `<option value="${escHtml(r.id)}"${r.id === selected ? ' selected' : ''}>${escHtml(r.name)}</option>`).join('');
 }
-function renderProjects(app){
-    const p = getProject(ui.projectId);
-    if (p) { renderProjectDetail(app, p); return; }
-    if (ui.projectId) { ui.projectId = null; saveUi(); }
-    const all = [...data.projects].sort((a, b) => a.order - b.order);
-    const active = all.filter(x => x.status !== 'done'), done = all.filter(x => x.status === 'done');
-    const card = x => {
-        const st = projectStats(x.id), room = getRoom(x.roomId);
-        const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
-        return `<div class="proj-card${x.status === 'paused' ? ' paused' : ''}" onclick="openProject(${jsArg(x.id)})">
-            <div class="proj-top"><span class="proj-name">${escHtml(x.name)}</span>${x.status === 'paused' ? '<span class="pill">in pausa</span>' : x.status === 'done' ? '<span class="pill ok">fatto</span>' : ''}</div>
-            ${room ? `<div class="proj-room">${escHtml(room.name)}</div>` : ''}
-            <div class="progress"><span style="width:${pct}%"></span></div>
-            <div class="proj-meta">${st.total ? `${st.done} di ${st.total} passi` : 'Nessun passo ancora'}${st.left ? ` · mancano ${fmtSp(st.left)} 🥄` : ''}</div>
-            ${st.next && x.status !== 'done' ? `<div class="proj-next">Prossimo: ${escHtml(st.next.title)}</div>` : ''}
-        </div>`;
-    };
+function openRoom(id){ ui.roomId = id; saveUi(); window.scrollTo(0, 0); render(); }
+function closeRoom(){ ui.roomId = null; saveUi(); render(); }
+
+function renderRooms(app){
+    const r = getRoom(ui.roomId);
+    if (r) { renderRoomDetail(app, r); return; }
+    if (ui.roomId) { ui.roomId = null; saveUi(); }
+    const rooms = sortedRooms();
     app.innerHTML = `
-        <div class="sec-head"><div><div class="sec-title">Progetti</div><div class="sec-sub">Sistemare casa un passo alla volta</div></div>
-            <button class="add-btn" onclick="openProjectModal()">+ Nuovo</button></div>
-        ${active.length ? active.map(card).join('') : `<div class="empty-note">Ancora nessun progetto. Pensa a una stanza che vorresti diversa: dividi il lavoro in piccoli passi e falli quando hai energie.</div>`}
-        ${done.length ? `<div class="block" style="margin-top:18px;"><div class="block-title"><button class="link-btn" onclick="ui.showDoneProjects=!ui.showDoneProjects;saveUi();render()">${ui.showDoneProjects ? '▾' : '▸'} Completati (${done.length})</button></div>
-            ${ui.showDoneProjects ? done.map(card).join('') : ''}</div>` : ''}
-        <button class="btn btn-secondary" onclick="openRoomsModal()">Gestisci stanze</button>`;
+        <div class="sec-head"><div><div class="sec-title">Stanze ${helpBtn('rooms')}</div><div class="sec-sub">Cosa fare in ogni stanza, con le foto di com’è e di come la vorresti</div></div>
+            <button class="add-btn" onclick="openRoomsModal()">Modifica</button></div>
+        <div class="room-list">${rooms.map(x => {
+            const st = roomStats(x.id), cover = roomCover(x.id), nph = roomPhotos(x.id).length;
+            const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
+            return `<div class="room-tile" onclick="openRoom(${jsArg(x.id)})">
+                <div class="room-cover">${cover ? photoMediaHtml(cover, 'thumb') : `<span class="room-cover-empty">${escHtml(x.name.charAt(0).toUpperCase())}</span>`}</div>
+                <div class="room-info"><div class="room-tname">${escHtml(x.name)}</div>
+                    <div class="room-tmeta">${st.open ? `${st.open} da fare` : st.total ? 'tutto fatto ✓' : 'niente in lista'}${nph ? ` · ${nph} foto` : ''}</div>
+                    ${st.total ? `<div class="progress"><span style="width:${pct}%"></span></div>` : ''}</div></div>`;
+        }).join('') || `<div class="empty-note">Nessuna stanza. Tocca “Modifica” per aggiungerne.</div>`}</div>`;
+    hydratePhotos(app);
 }
-function openProject(id){ ui.projectId = id; saveUi(); window.scrollTo(0, 0); render(); }
-function closeProject(){ ui.projectId = null; saveUi(); render(); }
+// Foto + disegni sovrapposti (stessa resa nelle miniature e nel visore)
+function photoMediaHtml(p, size){
+    return `<img data-photo="${escHtml(p.id)}" data-size="${size}" alt="">
+        <svg class="annot" viewBox="0 0 ${p.w} ${p.h}" preserveAspectRatio="xMidYMid slice" aria-hidden="true">${annotInner(p)}</svg>`;
+}
+function photoTileHtml(p){
+    const drawn = p.strokes.length || p.texts.length;
+    return `<div class="photo-tile" onclick="openViewer(${jsArg(p.id)})">${photoMediaHtml(p, 'thumb')}
+        <span class="photo-kind k-${p.kind}">${PHOTO_KINDS[p.kind]}</span>${drawn ? '<span class="photo-drawn">✎</span>' : ''}
+        ${p.caption ? `<span class="photo-cap">${escHtml(p.caption)}</span>` : ''}</div>`;
+}
 function stepRowHtml(t, i, n){
     const a = jsArg(t.id);
     const meta = [`🥄${fmtSp(effectiveCost(t))}`];
@@ -1735,102 +1788,586 @@ function stepRowHtml(t, i, n){
     </div>`;
 }
 let stepCost = 1;
-function renderProjectDetail(app, p){
-    const st = projectStats(p.id), room = getRoom(p.roomId);
-    const steps = projectSteps(p.id), open = steps.filter(t => !t.done), done = steps.filter(t => t.done);
-    const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
-    const allDone = st.total > 0 && !open.some(t => !t.rec) && p.status !== 'done';
-    const a = jsArg(p.id);
+function renderRoomDetail(app, r){
+    const a = jsArg(r.id);
+    const tasks = roomTasks(r.id), open = tasks.filter(t => !t.done), done = tasks.filter(t => t.done);
+    const photos = roomPhotos(r.id), filt = ui.photoFilter || 'all';
+    const shown = filt === 'all' ? photos : photos.filter(p => p.kind === filt);
+    const st = roomStats(r.id);
+    const cnt = k => k === 'all' ? photos.length : photos.filter(p => p.kind === k).length;
     app.innerHTML = `
-        <button class="link-btn back" onclick="closeProject()">‹ Progetti</button>
-        <div class="sec-title" style="margin-top:6px;">${escHtml(p.name)}</div>
-        <div class="sec-sub">${room ? escHtml(room.name) + ' · ' : ''}${p.status === 'paused' ? 'in pausa' : p.status === 'done' ? `completato${p.doneAt ? ' il ' + fmtDate(p.doneAt) : ''}` : 'in corso'}</div>
-        ${p.goal ? `<div class="sheet-note" style="margin-top:12px;">${escHtml(p.goal)}</div>` : ''}
-        <div class="progress big"><span style="width:${pct}%"></span></div>
-        <div class="proj-meta">${st.total ? `${st.done} di ${st.total} passi` : 'Aggiungi il primo passo qui sotto'}${st.left ? ` · mancano ${fmtSp(st.left)} cucchiaini` : ''}</div>
-        ${allDone ? `<div class="celebrate">Tutti i passi sono fatti!<button class="btn btn-primary" onclick="setProjectStatus(${a},'done')">Segna il progetto come completato</button></div>` : ''}
-        <div class="block" style="margin-top:18px;">
-            <div class="block-title"><span>Passi</span><span class="count">${open.length || ''}</span></div>
-            ${open.map((t, i) => stepRowHtml(t, i, open.length)).join('') || `<div class="empty-note">Nessun passo da fare.</div>`}
-            <div class="step-add">
-                <input type="text" id="stepTitle" placeholder="Nuovo passo (es. svuotare l’armadio)" maxlength="140" onkeydown="if(event.key==='Enter'){event.preventDefault();addStep();}">
-                <div class="sp-stepper on"><button type="button" onclick="stepCost=clamp(qr(stepCost-0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Meno">−</button><span id="stepCostVal">🥄 ${fmtSp(stepCost)}</span><button type="button" onclick="stepCost=clamp(qr(stepCost+0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Più">+</button></div>
-                <button class="add-btn" onclick="addStep()">Aggiungi</button>
-            </div>
-            <div class="e-hint">I passi senza data restano qui. Quando vuoi farne uno, toccalo e scegli un giorno: comparirà negli impegni e nelle energie.</div>
+        <button class="link-btn back" onclick="closeRoom()">‹ Stanze</button>
+        <div class="sec-head" style="margin-top:4px;"><div><div class="sec-title">${escHtml(r.name)} ${helpBtn('room')}</div>
+            <div class="sec-sub">${st.total ? `${st.done} di ${st.total} fatte${st.left ? ` · mancano ${fmtSp(st.left)} cucchiaini` : ''}` : 'Aggiungi foto e cose da fare'}</div></div></div>
+        <div class="block card">
+            <div class="block-title"><span>Foto</span><button class="add-btn" onclick="pickPhoto()">+ Foto</button></div>
+            ${photos.length ? `<div class="chip-row">${['all','now','goal','idea'].map(k => `<button class="chip${filt === k ? ' on' : ''}" onclick="ui.photoFilter='${k}';saveUi();render()">${k === 'all' ? 'Tutte' : PHOTO_KINDS[k]} · ${cnt(k)}</button>`).join('')}</div>
+                <div class="photo-grid">${shown.map(photoTileHtml).join('') || `<div class="empty-note">Nessuna foto di questo tipo.</div>`}</div>`
+                : `<div class="empty-note">Fotografa com’è adesso e aggiungi immagini di come la vorresti. Sopra puoi scrivere e disegnare, anche con la pennina.</div>`}
         </div>
-        ${done.length ? `<div class="block"><div class="block-title"><span>Fatti</span><span class="count">${done.length}</span></div>${done.map((t, i) => stepRowHtml(t, i, done.length)).join('')}</div>` : ''}
-        <div class="modal-btns">
-            <button class="btn btn-secondary" onclick="openProjectModal(${a})">Modifica</button>
-            ${p.status === 'active' ? `<button class="btn btn-secondary" onclick="setProjectStatus(${a},'paused')">Metti in pausa</button>`
-                : `<button class="btn btn-secondary" onclick="setProjectStatus(${a},'active')">${p.status === 'done' ? 'Riapri' : 'Riprendi'}</button>`}
-        </div>`;
+        <div class="block card">
+            <div class="block-title"><span>Da fare</span><span class="count">${open.length || ''}</span></div>
+            ${open.map((t, i) => stepRowHtml(t, i, open.length)).join('') || `<div class="empty-note">Niente in lista.</div>`}
+            <div class="step-add">
+                <input type="text" id="stepTitle" placeholder="Cosa c’è da fare? (es. montare il Kallax)" maxlength="140" onkeydown="if(event.key==='Enter'){event.preventDefault();addRoomTask();}">
+                <div class="sp-stepper on"><button type="button" onclick="stepCost=clamp(qr(stepCost-0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Meno">−</button><span id="stepCostVal">🥄 ${fmtSp(stepCost)}</span><button type="button" onclick="stepCost=clamp(qr(stepCost+0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Più">+</button></div>
+                <button class="add-btn" onclick="addRoomTask()">Aggiungi</button>
+            </div>
+            <div class="e-hint">Le cose senza data restano qui. Toccane una e scegli un giorno: finirà negli impegni e nelle energie.</div>
+        </div>
+        ${done.length ? `<div class="block card"><div class="block-title"><span>Fatte</span><button class="link-btn danger" onclick="clearRoomDone(${a})">Svuota</button></div>${done.map((t, i) => stepRowHtml(t, i, done.length)).join('')}</div>` : ''}
+        <div class="block card"><div class="block-title"><span>Note</span></div>
+            <textarea id="roomNotes" placeholder="Come la vorresti? Misure, colori, idee…" onchange="saveRoomNotes(${a},this.value)">${escHtml(r.notes)}</textarea></div>`;
+    hydratePhotos(app);
 }
-function addStep(){
+function addRoomTask(){
     const inp = $('stepTitle'), title = inp ? inp.value.trim() : '';
     if (!title) { if (inp) inp.focus(); return; }
-    const p = getProject(ui.projectId);
-    if (!p) return;
+    const r = getRoom(ui.roomId);
+    if (!r) return;
     const now = Date.now();
-    data.tasks.push({ id:uid(), title, catId:null, subId:null, urg:1, cost:stepCost, projectId:p.id, date:null, time:null, notes:'',
+    data.tasks.push({ id:uid(), title, catId:null, subId:null, urg:1, cost:stepCost, roomId:r.id, projectId:null, date:null, time:null, notes:'',
         rec:null, sched:null, anchor:null, postponed:0, log:[], done:false, doneAt:null, created:now, order:now });
-    if (p.status === 'done') p.status = 'active';
     save(); render();
     const again = $('stepTitle'); if (again) again.focus();
 }
 function moveStep(id, dir){
     const t = findTask(id);
-    if (!t) return;
-    const open = projectSteps(t.projectId).filter(x => !x.done);
+    if (!t || !t.roomId) return;
+    const open = roomTasks(t.roomId).filter(x => !x.done);
     const i = open.findIndex(x => x.id === id), j = i + dir;
     if (i < 0 || j < 0 || j >= open.length) return;
     [open[i], open[j]] = [open[j], open[i]];
     open.forEach((x, k) => { x.order = k; });
     save(); render();
 }
-function setProjectStatus(id, status){
-    const p = getProject(id);
-    if (!p) return;
-    p.status = status;
-    p.doneAt = status === 'done' ? todayStr() : null;
-    save(); render();
-    if (status === 'done') showToast(`🎉 ${p.name}: completato!`);
-}
-let editingProjectId = null;
-function openProjectModal(id){
-    const p = getProject(id);
-    editingProjectId = p ? p.id : null;
-    $('pjTitle').textContent = p ? 'Modifica progetto' : 'Nuovo progetto';
-    $('pjName').value = p ? p.name : '';
-    $('pjGoal').value = p ? p.goal : '';
-    $('pjRoom').innerHTML = `<option value="">Nessuna stanza</option>` + sortedRooms().map(r => `<option value="${escHtml(r.id)}"${p && p.roomId === r.id ? ' selected' : ''}>${escHtml(r.name)}</option>`).join('');
-    $('pjDelete').classList.toggle('hidden', !p);
-    openModal('modalProject');
-}
-function saveProject(){
-    const name = $('pjName').value.trim();
-    if (!name) { showToast('⚠ Dai un nome al progetto'); return; }
-    const fields = { name, roomId:$('pjRoom').value || null, goal:$('pjGoal').value.trim() };
-    if (editingProjectId) {
-        const p = getProject(editingProjectId);
-        if (p) Object.assign(p, fields);
-    } else {
-        const id = uid(), maxO = data.projects.reduce((m, x) => Math.max(m, x.order), -1);
-        data.projects.push({ id, ...fields, status:'active', order:maxO + 1, doneAt:null, created:Date.now() });
-        ui.projectId = id; saveUi();
-    }
-    save(); closeModal('modalProject'); render();
-}
-function deleteProject(){
-    const p = getProject(editingProjectId);
-    if (!p) return;
-    const n = data.tasks.filter(t => t.projectId === p.id).length;
-    confirmDialog({ title:'Eliminare?', msg:`“${p.name}” verrà eliminato${n ? `, insieme ai suoi ${n} passi` : ''}.` }, () => {
-        data.tasks = data.tasks.filter(t => t.projectId !== p.id);
-        data.projects = data.projects.filter(x => x.id !== p.id);
-        ui.projectId = null; saveUi();
-        save(); closeModal('modalProject'); render();
+function clearRoomDone(roomId){
+    const n = roomTasks(roomId).filter(t => t.done).length;
+    confirmDialog({ title:'Svuotare?', msg:`Tolgo ${n} ${n === 1 ? 'cosa fatta' : 'cose fatte'} dalla lista di questa stanza.`, ok:'Svuota' }, () => {
+        data.tasks = data.tasks.filter(t => !(t.roomId === roomId && t.done));
+        save(); render();
     });
+}
+function saveRoomNotes(id, v){ const r = getRoom(id); if (r) { r.notes = String(v); save(); } }
+
+// ── Archivio immagini (IndexedDB: regge molte più foto del localStorage) ────
+let _idbP = null;
+function idb(){
+    return _idbP = _idbP || new Promise((res, rej) => {
+        const rq = indexedDB.open('casahub-img', 1);
+        rq.onupgradeneeded = () => { rq.result.createObjectStore('blobs'); rq.result.createObjectStore('thumbs'); };
+        rq.onsuccess = () => res(rq.result);
+        rq.onerror = () => rej(rq.error);
+    });
+}
+function idbReq(store, mode, fn){
+    return idb().then(db => new Promise((res, rej) => {
+        const tx = db.transaction(store, mode), q = fn(tx.objectStore(store));
+        tx.oncomplete = () => res(q && 'result' in q ? q.result : undefined);
+        tx.onerror = () => rej(tx.error);
+    }));
+}
+const idbGet = (s, k) => idbReq(s, 'readonly', st => st.get(k)).then(v => v || null).catch(() => null);
+const idbPut = (s, k, v) => idbReq(s, 'readwrite', st => st.put(v, k));
+const idbDel = (s, k) => idbReq(s, 'readwrite', st => st.delete(k)).catch(() => {});
+const idbKeys = s => idbReq(s, 'readonly', st => st.getAllKeys()).catch(() => []);
+function loadImage(src){ return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; }); }
+async function resizeBlob(src, maxSide, quality){
+    const url = URL.createObjectURL(src);
+    try {
+        const im = await loadImage(url);
+        const sc = Math.min(1, maxSide / Math.max(im.naturalWidth, im.naturalHeight));
+        const w = Math.max(1, Math.round(im.naturalWidth * sc)), h = Math.max(1, Math.round(im.naturalHeight * sc));
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); ctx.drawImage(im, 0, 0, w, h);
+        const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', quality));
+        return { blob, w, h };
+    } finally { URL.revokeObjectURL(url); }
+}
+function blobToB64(blob){ return new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); }); }
+function b64ToBlob(b64, mime){ const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type:mime || 'image/jpeg' }); }
+const _urls = new Map(), _downloads = new Map();
+async function getPhotoUrl(id, size){
+    const key = id + '|' + size;
+    if (_urls.has(key)) return _urls.get(key);
+    let blob = await idbGet(size === 'thumb' ? 'thumbs' : 'blobs', id);
+    if (!blob && size === 'thumb') {
+        const full = await idbGet('blobs', id);
+        if (full) { blob = (await resizeBlob(full, 480, 0.72)).blob; idbPut('thumbs', id, blob).catch(() => {}); }
+    }
+    if (!blob) {
+        const full = await downloadPhoto(id);
+        if (!full) return null;
+        blob = size === 'thumb' ? (await idbGet('thumbs', id)) || full : full;
+    }
+    const url = URL.createObjectURL(blob);
+    _urls.set(key, url);
+    return url;
+}
+function hydratePhotos(root){
+    root.querySelectorAll('img[data-photo]').forEach(async img => {
+        if (img.dataset.done) return;
+        img.dataset.done = '1';
+        const url = await getPhotoUrl(img.dataset.photo, img.dataset.size || 'thumb');
+        if (url) img.src = url;
+        else { const box = img.closest('.photo-tile,.room-cover'); if (box) box.classList.add('missing'); }
+    });
+}
+// Foto creata su un altro dispositivo: la scarica da Drive tramite lo script, una volta sola
+function downloadPhoto(id){
+    const p = getPhoto(id);
+    if (!p || !p.driveId || !syncUrl || !navigator.onLine) return Promise.resolve(null);
+    if (_downloads.has(id)) return _downloads.get(id);
+    const job = (async () => {
+        try {
+            const res = await fetch(`${syncUrl}?action=imgget&id=${encodeURIComponent(p.driveId)}&t=${Date.now()}`, { cache:'no-store' });
+            const j = await res.json();
+            if (!j || !j.ok || !j.data) return null;
+            const blob = b64ToBlob(j.data, j.mime);
+            await idbPut('blobs', id, blob);
+            const thumb = (await resizeBlob(blob, 480, 0.72)).blob;
+            await idbPut('thumbs', id, thumb);
+            return blob;
+        } catch (_) { return null; }
+        finally { _downloads.delete(id); }
+    })();
+    _downloads.set(id, job);
+    return job;
+}
+let _uploading = false, _photoSyncError = '';
+async function uploadPending(){
+    if (_uploading || !syncUrl || !navigator.onLine) return;
+    _uploading = true;
+    try {
+        for (const p of data.photos.filter(x => !x.driveId)) {
+            const blob = await idbGet('blobs', p.id);
+            if (!blob) continue;
+            const res = await fetch(`${syncUrl}?action=imgput`, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+                body:JSON.stringify({ kind:'img', id:p.id, mime:blob.type || 'image/jpeg', data:await blobToB64(blob) }) });
+            let j = null;
+            try { j = await res.json(); } catch (_) {}
+            if (!j || !j.ok || !j.fileId) {
+                const old = !j || /dati non validi|unknown/i.test(j.error || '');
+                _photoSyncError = old ? 'Per salvare le foto su Drive aggiorna lo script Google (Sync → Script Google).' : 'Foto non caricate: ' + (j.error || 'errore');
+                break;
+            }
+            _photoSyncError = '';
+            const cur = getPhoto(p.id);
+            if (cur) { cur.driveId = j.fileId; save(); }
+            else deleteDrivePhoto(j.fileId); // eliminata nel frattempo
+        }
+    } catch (e) { _photoSyncError = 'Foto non caricate: ' + (e.message || 'errore di rete'); }
+    finally { _uploading = false; }
+}
+function deleteDrivePhoto(fileId){
+    if (!fileId || !syncUrl) return;
+    fetch(`${syncUrl}?action=imgdel`, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' }, body:JSON.stringify({ kind:'imgdel', fileId }) }).catch(() => {});
+}
+// Pulizia: immagini locali di foto che non esistono più (eliminate anche da un altro dispositivo)
+async function gcPhotos(){
+    const ids = new Set(data.photos.map(p => p.id));
+    for (const s of ['blobs', 'thumbs']) for (const k of await idbKeys(s)) if (!ids.has(k)) idbDel(s, k);
+}
+
+// ── Aggiunta di una foto ────────────────────────────────────────────────────
+let _newPhoto = null;
+function pickPhoto(){ const i = $('photoInput'); i.value = ''; i.click(); }
+async function handlePhotoPick(ev){
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    showToast('Preparo la foto…');
+    try {
+        const full = await resizeBlob(file, 1600, 0.82);
+        const thumb = await resizeBlob(full.blob, 480, 0.72);
+        _newPhoto = { blob:full.blob, thumb:thumb.blob, w:full.w, h:full.h, kind:'now' };
+        $('npPreview').src = URL.createObjectURL(thumb.blob);
+        $('npCaption').value = '';
+        renderNewPhotoKinds();
+        openModal('modalNewPhoto');
+    } catch (e) { showToast('⚠ Immagine non leggibile'); }
+}
+function renderNewPhotoKinds(){
+    $('npKinds').innerHTML = Object.entries(PHOTO_KINDS).map(([k, v]) => `<button type="button" class="chip${_newPhoto.kind === k ? ' on' : ''}" onclick="_newPhoto.kind='${k}';renderNewPhotoKinds()">${v}</button>`).join('');
+}
+async function saveNewPhoto(){
+    if (!_newPhoto || !getRoom(ui.roomId)) { closeModal('modalNewPhoto'); return; }
+    const id = uid();
+    try {
+        await idbPut('blobs', id, _newPhoto.blob);
+        await idbPut('thumbs', id, _newPhoto.thumb);
+    } catch (e) { showToast('⚠ Spazio insufficiente per salvare la foto'); return; }
+    data.photos.push({ id, roomId:ui.roomId, kind:_newPhoto.kind, caption:$('npCaption').value.trim(), w:_newPhoto.w, h:_newPhoto.h,
+        driveId:null, strokes:[], texts:[], created:Date.now() });
+    URL.revokeObjectURL($('npPreview').src);
+    _newPhoto = null;
+    // chiede al browser di non cancellare mai l'archivio delle foto per liberare spazio
+    try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (_) {}
+    save(); closeModal('modalNewPhoto'); render();
+    showToast('Foto aggiunta: toccala per scriverci sopra');
+    uploadPending();
+}
+
+// ── Disegni: tratti e scritte in coordinate della foto ─────────────────────
+const isHex = c => /^#[0-9a-f]{6}$/i.test(c);
+function haloFor(c){
+    const n = parseInt(c.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+    return (r * 0.299 + g * 0.587 + b * 0.114) > 140 ? 'rgba(0,0,0,.7)' : 'rgba(255,255,255,.85)';
+}
+function strokePath(pts){
+    if (!pts.length) return '';
+    const f = v => Math.round(v * 10) / 10;
+    if (pts.length === 1) return `M${f(pts[0][0])} ${f(pts[0][1])}l0.1 0`;
+    let d = `M${f(pts[0][0])} ${f(pts[0][1])}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+        const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2;
+        d += `Q${f(pts[i][0])} ${f(pts[i][1])} ${f(mx)} ${f(my)}`;
+    }
+    const l = pts[pts.length - 1];
+    return d + `L${f(l[0])} ${f(l[1])}`;
+}
+function annotInner(p){
+    return p.strokes.map(s => `<path d="${strokePath(s.pts)}" stroke="${s.c}" stroke-width="${s.w}" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`).join('') +
+        p.texts.map(t => `<text x="${t.x}" y="${t.y}" font-size="${t.fs}" fill="${t.c}" stroke="${haloFor(t.c)}" stroke-width="${t.fs * 0.16}" paint-order="stroke" stroke-linejoin="round" font-family="Nunito, Segoe UI, sans-serif" font-weight="800">${escHtml(t.t)}</text>`).join('');
+}
+
+// ── Visore / editor a schermo intero ────────────────────────────────────────
+let vw = null;
+function viewerOpen(){ return !!vw; }
+function openViewer(id){
+    const p = getPhoto(id);
+    if (!p) return;
+    vw = { id, editing:false, tool:'pen', color:ui.penColor || '#ffd54a', size:ui.penSize || 2, penOnly:!!ui.penOnly,
+        s:1, tx:0, ty:0, fit:1, pointers:new Map(), drawing:null, pinch:null, pan:null, erase:null, tap:null, history:[] };
+    $('vwCaption').value = p.caption;
+    $('vwKind').innerHTML = Object.entries(PHOTO_KINDS).map(([k, v]) => `<option value="${k}"${p.kind === k ? ' selected' : ''}>${v}</option>`).join('');
+    const cv = $('vwCanvas'), img = $('vwImg'), svg = $('vwSvg');
+    cv.style.width = p.w + 'px'; cv.style.height = p.h + 'px';
+    img.removeAttribute('src'); img.style.width = p.w + 'px'; img.style.height = p.h + 'px';
+    svg.setAttribute('viewBox', `0 0 ${p.w} ${p.h}`); svg.setAttribute('width', p.w); svg.setAttribute('height', p.h);
+    $('vwMissing').classList.add('hidden');
+    $('photoViewer').classList.remove('hidden');
+    document.body.classList.add('no-scroll');
+    renderViewerBar(); renderAnnot(); requestAnimationFrame(fitView);
+    getPhotoUrl(id, 'full').then(url => { if (!vw || vw.id !== id) return; if (url) img.src = url; else $('vwMissing').classList.remove('hidden'); });
+    try { history.pushState({ casahubViewer:1 }, ''); } catch (_) {}
+}
+function closeViewer(fromPop){
+    if (!vw) return;
+    const p = getPhoto(vw.id);
+    if (p) {
+        const cap = $('vwCaption').value.trim(), kind = $('vwKind').value;
+        if (cap !== p.caption || (PHOTO_KINDS[kind] && kind !== p.kind)) { p.caption = cap; if (PHOTO_KINDS[kind]) p.kind = kind; save(); }
+    }
+    vw = null;
+    $('photoViewer').classList.add('hidden');
+    document.body.classList.remove('no-scroll');
+    if (!fromPop) { try { if (history.state && history.state.casahubViewer) history.back(); } catch (_) {} }
+    render();
+}
+window.addEventListener('popstate', () => { if (vw) closeViewer(true); });
+function fitView(){
+    if (!vw) return;
+    const p = getPhoto(vw.id), st = $('vwStage').getBoundingClientRect();
+    const s = Math.min(st.width / p.w, st.height / p.h);
+    vw.fit = vw.s = s; vw.tx = (st.width - p.w * s) / 2; vw.ty = (st.height - p.h * s) / 2;
+    applyView();
+}
+function applyView(){ $('vwCanvas').style.transform = `translate(${vw.tx}px,${vw.ty}px) scale(${vw.s})`; }
+function renderAnnot(){ const p = getPhoto(vw.id); if (p) $('vwSvg').innerHTML = annotInner(p); }
+function renderViewerBar(){
+    const bar = $('vwBar');
+    if (!vw.editing) {
+        bar.innerHTML = `<div class="vw-row">
+            <button class="vw-btn primary" onclick="setEditing(true)">✎ Scrivi e disegna</button>
+            <button class="vw-btn" onclick="exportPhoto()">Condividi</button>
+            <button class="vw-btn danger" onclick="deletePhoto()">Elimina</button></div>
+            <div class="vw-hint">Due dita per ingrandire · ${'⤢'} per tornare a tutta foto</div>`;
+        return;
+    }
+    const tool = (k, label) => `<button class="vw-btn${vw.tool === k ? ' on' : ''}" onclick="vw.tool='${k}';renderViewerBar()">${label}</button>`;
+    bar.innerHTML = `<div class="vw-row">${tool('pen', '✎ Penna')}${tool('text', 'T Testo')}${tool('eraser', '⌫ Gomma')}
+            <button class="vw-btn" onclick="undoAnnot()" ${vw.history.length ? '' : 'disabled'} aria-label="Annulla">↶</button></div>
+        <div class="vw-row">${PEN_COLORS.map(c => `<button class="swatch${vw.color === c ? ' on' : ''}" style="background:${c}" onclick="setPen('color','${c}')" aria-label="Colore"></button>`).join('')}
+            <span class="vw-sep"></span>${Object.entries(PEN_SIZES).map(([n, l]) => `<button class="size-dot${vw.size === +n ? ' on' : ''}" onclick="setPen('size',${n})" aria-label="${l}"><i style="width:${4 + n * 3}px;height:${4 + n * 3}px"></i></button>`).join('')}</div>
+        <div class="vw-row">
+            <label class="vw-check"><input type="checkbox" ${vw.penOnly ? 'checked' : ''} onchange="setPen('penOnly',this.checked)"> Solo pennina</label>
+            <button class="vw-btn" onclick="clearAnnot()">Cancella tutto</button>
+            <button class="vw-btn primary" onclick="setEditing(false)">Fatto</button></div>
+        <div class="vw-hint">${vw.penOnly ? 'Scrivi con la pennina; con le dita sposti e ingrandisci.' : 'Un dito disegna; due dita spostano e ingrandiscono.'}</div>`;
+}
+function setEditing(on){ vw.editing = on; renderViewerBar(); }
+function setPen(k, v){
+    vw[k] = v;
+    if (k === 'color') ui.penColor = v; else if (k === 'size') ui.penSize = v; else ui.penOnly = v;
+    saveUi(); renderViewerBar();
+}
+function annotSnapshot(){ const p = getPhoto(vw.id); return JSON.stringify({ s:p.strokes, t:p.texts }); }
+function pushHistory(){ vw.history.push(annotSnapshot()); if (vw.history.length > 40) vw.history.shift(); }
+function undoAnnot(){
+    const snap = vw.history.pop(), p = getPhoto(vw.id);
+    if (!snap || !p) return;
+    const o = JSON.parse(snap); p.strokes = o.s; p.texts = o.t;
+    save(); renderAnnot(); renderViewerBar();
+}
+function clearAnnot(){
+    const p = getPhoto(vw.id);
+    if (!p || (!p.strokes.length && !p.texts.length)) return;
+    pushHistory(); p.strokes = []; p.texts = [];
+    save(); renderAnnot(); renderViewerBar();
+    showToast('Disegni cancellati', { label:'Annulla', fn:undoAnnot });
+}
+function toImg(e){
+    const r = $('vwStage').getBoundingClientRect();
+    return [(e.clientX - r.left - vw.tx) / vw.s, (e.clientY - r.top - vw.ty) / vw.s];
+}
+// spessore e testo pensati "a schermo": se sei ingrandita, il tratto resta fine
+function zoomK(){ return vw.fit / vw.s; }
+function initViewerGestures(){
+    const stage = $('vwStage');
+    stage.addEventListener('pointerdown', e => {
+        if (!vw) return;
+        try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+        vw.pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+        if (vw.pointers.size === 2) { cancelStroke(); vw.erase = null; vw.tap = null; startPinch(); return; }
+        if (vw.pointers.size > 2) return;
+        const canDraw = vw.editing && (!vw.penOnly || e.pointerType === 'pen' || e.pointerType === 'mouse');
+        if (!canDraw) { vw.pan = { id:e.pointerId, x:e.clientX, y:e.clientY, tx:vw.tx, ty:vw.ty }; return; }
+        const pt = toImg(e), p = getPhoto(vw.id);
+        if (vw.tool === 'pen') {
+            const el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            const w = Math.max(0.5, p.w * 0.0035 * vw.size * zoomK());
+            el.setAttribute('stroke', vw.color); el.setAttribute('stroke-width', w); el.setAttribute('fill', 'none');
+            el.setAttribute('stroke-linecap', 'round'); el.setAttribute('stroke-linejoin', 'round');
+            $('vwSvg').appendChild(el);
+            vw.drawing = { id:e.pointerId, pts:[pt], w, el };
+            el.setAttribute('d', strokePath(vw.drawing.pts));
+        } else if (vw.tool === 'eraser') { vw.erase = { snap:annotSnapshot(), hit:false }; eraseAt(pt); }
+        else vw.tap = { id:e.pointerId, x:e.clientX, y:e.clientY, pt };
+    });
+    stage.addEventListener('pointermove', e => {
+        if (!vw || !vw.pointers.has(e.pointerId)) return;
+        vw.pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+        if (vw.pinch) { updatePinch(); return; }
+        if (vw.drawing && vw.drawing.id === e.pointerId) {
+            const pt = toImg(e), last = vw.drawing.pts[vw.drawing.pts.length - 1];
+            if (Math.hypot(pt[0] - last[0], pt[1] - last[1]) * vw.s < 1.5) return;
+            vw.drawing.pts.push(pt);
+            vw.drawing.el.setAttribute('d', strokePath(vw.drawing.pts));
+        } else if (vw.erase) eraseAt(toImg(e));
+        else if (vw.pan && vw.pan.id === e.pointerId) { vw.tx = vw.pan.tx + e.clientX - vw.pan.x; vw.ty = vw.pan.ty + e.clientY - vw.pan.y; applyView(); }
+        else if (vw.tap && Math.hypot(e.clientX - vw.tap.x, e.clientY - vw.tap.y) > 10) vw.tap = null;
+    });
+    const end = e => {
+        if (!vw || !vw.pointers.has(e.pointerId)) return;
+        vw.pointers.delete(e.pointerId);
+        if (vw.drawing && vw.drawing.id === e.pointerId) endStroke();
+        if (vw.erase && !vw.pointers.size) {
+            if (vw.erase.hit) { vw.history.push(vw.erase.snap); save(); renderViewerBar(); }
+            vw.erase = null;
+        }
+        if (vw.tap && vw.tap.id === e.pointerId && e.type === 'pointerup') textTap(vw.tap.pt);
+        vw.tap = null;
+        if (vw.pointers.size < 2) vw.pinch = null;
+        if (vw.pointers.size === 1) { const [id, q] = [...vw.pointers.entries()][0]; vw.pan = { id, x:q.x, y:q.y, tx:vw.tx, ty:vw.ty }; }
+        if (!vw.pointers.size) vw.pan = null;
+    };
+    stage.addEventListener('pointerup', end);
+    stage.addEventListener('pointercancel', end);
+    stage.addEventListener('wheel', e => {
+        if (!vw) return;
+        e.preventDefault();
+        const r = stage.getBoundingClientRect(), cx = e.clientX - r.left, cy = e.clientY - r.top;
+        zoomAround(cx, cy, vw.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+    }, { passive:false });
+    window.addEventListener('resize', () => { if (vw) fitView(); });
+}
+function zoomAround(cx, cy, ns){
+    ns = clamp(ns, vw.fit * 0.8, vw.fit * 10);
+    const ix = (cx - vw.tx) / vw.s, iy = (cy - vw.ty) / vw.s;
+    vw.s = ns; vw.tx = cx - ix * ns; vw.ty = cy - iy * ns;
+    applyView();
+}
+function startPinch(){
+    const [a, b] = [...vw.pointers.values()], r = $('vwStage').getBoundingClientRect();
+    vw.pan = null;
+    vw.pinch = { d:Math.hypot(a.x - b.x, a.y - b.y) || 1, cx:(a.x + b.x) / 2 - r.left, cy:(a.y + b.y) / 2 - r.top, s:vw.s, tx:vw.tx, ty:vw.ty };
+}
+function updatePinch(){
+    const [a, b] = [...vw.pointers.values()], r = $('vwStage').getBoundingClientRect(), pc = vw.pinch;
+    const ns = clamp(pc.s * Math.hypot(a.x - b.x, a.y - b.y) / pc.d, vw.fit * 0.8, vw.fit * 10);
+    const cx = (a.x + b.x) / 2 - r.left, cy = (a.y + b.y) / 2 - r.top;
+    const ix = (pc.cx - pc.tx) / pc.s, iy = (pc.cy - pc.ty) / pc.s;
+    vw.s = ns; vw.tx = cx - ix * ns; vw.ty = cy - iy * ns;
+    applyView();
+}
+function cancelStroke(){ if (vw && vw.drawing) { vw.drawing.el.remove(); vw.drawing = null; } }
+function endStroke(){
+    const d = vw.drawing, p = getPhoto(vw.id);
+    vw.drawing = null;
+    if (!d || !p) return;
+    pushHistory();
+    p.strokes.push({ c:vw.color, w:Math.round(d.w * 10) / 10, pts:d.pts.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10]) });
+    save(); renderAnnot(); renderViewerBar();
+}
+function textBox(t){ return { x0:t.x, x1:t.x + t.t.length * t.fs * 0.58, y0:t.y - t.fs, y1:t.y + t.fs * 0.25 }; }
+function eraseAt(pt){
+    const p = getPhoto(vw.id), tol = 16 / vw.s;
+    const before = p.strokes.length + p.texts.length;
+    p.strokes = p.strokes.filter(s => !s.pts.some(q => Math.hypot(q[0] - pt[0], q[1] - pt[1]) < tol + s.w / 2));
+    p.texts = p.texts.filter(t => { const b = textBox(t); return !(pt[0] > b.x0 - tol && pt[0] < b.x1 + tol && pt[1] > b.y0 - tol && pt[1] < b.y1 + tol); });
+    if (p.strokes.length + p.texts.length !== before) { vw.erase.hit = true; renderAnnot(); }
+}
+let _textEdit = null;
+function textTap(pt){
+    const p = getPhoto(vw.id);
+    const idx = p.texts.findIndex(t => { const b = textBox(t); return pt[0] > b.x0 && pt[0] < b.x1 && pt[1] > b.y0 && pt[1] < b.y1; });
+    _textEdit = { idx, pt };
+    $('txtInput').value = idx >= 0 ? p.texts[idx].t : '';
+    $('txtDelete').classList.toggle('hidden', idx < 0);
+    openModal('modalText');
+    setTimeout(() => $('txtInput').focus(), 50);
+}
+function saveText(){
+    const p = vw && getPhoto(vw.id), v = $('txtInput').value.trim();
+    closeModal('modalText');
+    if (!p || !_textEdit) return;
+    pushHistory();
+    if (_textEdit.idx >= 0) { if (v) p.texts[_textEdit.idx].t = v; else p.texts.splice(_textEdit.idx, 1); }
+    else if (v) p.texts.push({ x:Math.round(_textEdit.pt[0]), y:Math.round(_textEdit.pt[1]), t:v.slice(0, 80), c:vw.color, fs:Math.round(p.w * 0.032 * (0.75 + vw.size * 0.25) * zoomK() * 10) / 10 });
+    else vw.history.pop();
+    _textEdit = null;
+    save(); renderAnnot(); renderViewerBar();
+}
+function deleteText(){ $('txtInput').value = ''; saveText(); }
+async function exportPhoto(){
+    const p = getPhoto(vw.id);
+    const url = p && await getPhotoUrl(p.id, 'full');
+    if (!url) { showToast('⚠ Foto non disponibile su questo dispositivo'); return; }
+    try {
+        const im = await loadImage(url), c = document.createElement('canvas');
+        c.width = p.w; c.height = p.h;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(im, 0, 0, p.w, p.h);
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        p.strokes.forEach(s => { ctx.strokeStyle = s.c; ctx.lineWidth = s.w; ctx.stroke(new Path2D(strokePath(s.pts))); });
+        p.texts.forEach(t => {
+            ctx.font = `800 ${t.fs}px Nunito, "Segoe UI", sans-serif`;
+            ctx.lineWidth = t.fs * 0.16; ctx.strokeStyle = haloFor(t.c); ctx.strokeText(t.t, t.x, t.y);
+            ctx.fillStyle = t.c; ctx.fillText(t.t, t.x, t.y);
+        });
+        const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+        const room = getRoom(p.roomId);
+        const name = slug(`${room ? room.name : 'stanza'} ${p.caption || PHOTO_KINDS[p.kind]}`) + '.jpg';
+        const file = new File([blob], name, { type:'image/jpeg' });
+        if (navigator.canShare && navigator.canShare({ files:[file] })) {
+            await navigator.share({ files:[file], title:p.caption || 'Casa Hub' }).catch(() => {});
+        } else {
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+            document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        }
+    } catch (e) { showToast('⚠ Non riesco a esportare la foto'); }
+}
+function deletePhoto(){
+    const p = getPhoto(vw.id);
+    if (!p) return;
+    confirmDialog({ title:'Eliminare la foto?', msg:'Spariscono anche i disegni e le scritte.' }, () => {
+        const driveId = p.driveId, id = p.id;
+        data.photos = data.photos.filter(x => x.id !== id);
+        idbDel('blobs', id); idbDel('thumbs', id);
+        ['thumb', 'full'].forEach(s => { const u = _urls.get(id + '|' + s); if (u) { URL.revokeObjectURL(u); _urls.delete(id + '|' + s); } });
+        deleteDrivePhoto(driveId);
+        save(); closeViewer();
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GUIDA: tour al primo avvio e "?" nelle schermate
+// ═══════════════════════════════════════════════════════════════════════════
+const HELP = {
+    checkin:{ t:'Il check-in del mattino', b:[
+        'Tre domande veloci: come hai dormito, come sta il corpo, come sta la testa. Da qui l’app stima quanti <b>cucchiaini</b> hai oggi.',
+        'Il numero è una proposta: con <b>−</b> e <b>+</b> lo correggi tu. Conta come ti senti davvero.',
+        'Se ieri hai sforato e il <b>debito</b> è attivo, oggi parti con qualche cucchiaino in meno.',
+        'Il massimo di una giornata buona, la riserva e il debito si cambiano in Impegni → Energia.'] },
+    task:{ t:'Un impegno', b:[
+        '<b>Urgenza</b>: gli urgenti non vengono mai proposti da spostare quando sfori.',
+        '<b>Cucchiaini</b>: “Predefinito” usa il valore della categoria; “Zero” per le cose che non pesano; con − e + vai a quarti (1,25 · 1,5 · 1,75).',
+        '<b>Senza data</b>: finisce in “Quando capita” (o nella sua stanza) e non pesa sulle energie finché non lo pianifichi.',
+        '<b>Ripetizione</b>: ogni N giorni, settimane, mesi o anni. “Conta dal giorno in cui lo completo” è utile per cose come “filtro cappa ogni 3 mesi”.',
+        '<b>Stanza</b>: se lo colleghi a una stanza, lo ritrovi anche nella sua lista di cose da fare.'] },
+    tasks:{ t:'Impegni', b:[
+        'Tocca <b>+</b> per aggiungere un impegno: scegli categoria, urgenza (normale, importante, urgente), data e, se serve, una ripetizione.',
+        'Tocca il <b>cerchio</b> per segnarlo come fatto. Tocca il nome per vedere i dettagli, rimandarlo o pianificarlo.',
+        '<b>Imprevisto</b> sposta a domani tutto quello che è di oggi o in ritardo.',
+        'In alto passi tra le viste: Oggi, Giorno, Settimana, Mese, Elenco (per categoria) ed Energia.'] },
+    energy:{ t:'Energie e cucchiaini', b:[
+        'Ogni mattina il <b>check-in</b> ti chiede come hai dormito, come sta il corpo e la testa, e propone quanti cucchiaini hai. Puoi correggere con − e +.',
+        'Ogni impegno costa dei cucchiaini, anche <b>0</b> o a quarti (1,25 · 1,5 · 1,75). Contano anche le spese fisse (igiene, lezioni…) e il riordino.',
+        'La fila di cucchiaini mostra: <b>grigio</b> spesi, <b>miele</b> in programma, <b>salvia</b> liberi, <b>tratteggiato</b> riserva, <b>lampone</b> oltre il limite.',
+        'Se sfori, l’app ti suggerisce cosa spostare (mai gli urgenti) e in quale giorno c’è spazio.'] },
+    tidy:{ t:'Riordino', b:[
+        'Il metodo FlyLady: <b>15 minuti al giorno</b>, una stanza alla volta. Non serve che sia perfetto.',
+        'Scegli la stanza (ti viene suggerita quella trascurata da più tempo) e avvia il timer. Lo schermo resta acceso; alla fine suona.',
+        'Se finisci prima, tocca “Ho finito”: conta i minuti fatti e i cucchiaini in proporzione.'] },
+    rooms:{ t:'Stanze', b:[
+        'Ogni stanza ha la sua <b>lista di cose da fare</b>, le sue <b>foto</b> e uno spazio per le note.',
+        'La copertina è la foto “Obiettivo” più recente. La barra mostra quante cose hai già fatto.',
+        'Con “Modifica” aggiungi, rinomini, riordini o elimini le stanze (le stesse del Riordino).'] },
+    room:{ t:'Una stanza', b:[
+        '<b>+ Foto</b>: scatta o scegli un’immagine e dille se è com’è <b>adesso</b>, l’<b>obiettivo</b> o un’<b>idea</b>.',
+        'Tocca una foto per ingrandirla, poi <b>Scrivi e disegna</b> per annotarla: per esempio scrivi “phon, piastra, spazzole” sopra un cubo del Kallax.',
+        'Le cose da fare senza data restano qui. Toccane una e scegli un giorno: comparirà negli impegni e nelle energie.'] },
+    photo:{ t:'Scrivere sulle foto', b:[
+        '<b>Penna</b>: disegna o scrivi a mano. <b>Testo</b>: tocca un punto e scrivi un’etichetta (tocca un’etichetta per modificarla). <b>Gomma</b>: passa sopra a un tratto o a una scritta per toglierli.',
+        'Con <b>due dita</b> ingrandisci e sposti. Da ingrandita il tratto resta fine: comodo per scrivere su dettagli piccoli.',
+        '<b>Solo pennina</b>: disegna solo la pennina, le dita servono per spostarti (e puoi appoggiare il palmo).',
+        '<b>Condividi</b> crea un’immagine con i disegni “stampati” sopra, da mandare su WhatsApp o salvare.'] },
+    shop:{ t:'Spesa', b:[
+        'Tocca un prodotto per segnarlo <b>da comprare</b>; con ⋯ aggiungi quantità o note. Scrivi nel campo in alto per cercare o aggiungere.',
+        '<b>Stampa / PDF</b> crea la lista divisa per reparti. <b>Google Doc</b> la salva nel tuo Drive. <b>Invia</b> la manda su WhatsApp o altre app.',
+        'Metti i reparti nell’ordine del tuo supermercato con “Gestisci reparti”. Dopo la spesa tocca “Spesa fatta”.'] },
+    sync:{ t:'Sync e backup', b:[
+        'Collegando uno script Google (le istruzioni sono qui sotto) usi l’app su più dispositivi: i dati stanno in un tuo Foglio Google, le foto in una cartella del tuo Drive.',
+        'Senza sync tutto resta su questo dispositivo. Il backup esporta i dati in un file, ma non le foto.'] },
+};
+function helpBtn(topic){ return `<button class="help-btn" onclick="event.stopPropagation();openHelp('${topic}')" aria-label="Aiuto">?</button>`; }
+function openHelp(topic){
+    const h = HELP[topic];
+    if (!h) return;
+    $('helpBody').innerHTML = `<div class="modal-title">${h.t}</div>${h.b.map(x => `<p class="help-p">${x}</p>`).join('')}
+        <button class="btn btn-primary" onclick="closeModal('modalHelp')">Ho capito</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalHelp');openTour()">Rivedi la guida completa</button>`;
+    openModal('modalHelp');
+}
+const TOUR = [
+    { i:'⌂', t:'Ti do il benvenuto in Casa Hub', b:'Impegni di casa, energie, riordino, stanze e spesa in un posto solo. In un minuto ti mostro come funziona. Puoi ritrovare tutto toccando i <b>?</b> nelle schermate.' },
+    { i:'✓', t:'Impegni', b:'Con <b>+</b> aggiungi un impegno, con urgenza, data e ripetizione. Tocca il cerchio quando l’hai fatto, oppure tocca il nome per rimandarlo. Se arriva un imprevisto, un tasto sposta tutto a domani.' },
+    { i:'🥄', t:'Le tue energie', b:'Ogni mattina un piccolo check-in stima i tuoi <b>cucchiaini</b>. Ogni impegno ne costa un po’ (anche zero o a quarti). Se la giornata è troppo piena, l’app ti dice cosa spostare.' },
+    { i:'◷', t:'Riordino', b:'15 minuti al giorno, una stanza alla volta, con un timer. Niente perfezionismo: quando suona, ti fermi.' },
+    { i:'▣', t:'Stanze', b:'Per ogni stanza: la lista delle cose da fare e le foto di com’è e di come la vorresti. Sulle foto puoi <b>scrivere e disegnare</b>, anche con la pennina.' },
+    { i:'🛒', t:'Spesa', b:'Spunta quello che serve: la lista si stampa divisa per reparti, diventa un Google Doc o parte su WhatsApp.' },
+    { i:'☁', t:'Su più dispositivi', b:'Dal tasto con la nuvoletta in alto colleghi la sincronizzazione con Google: dati e foto restano tuoi, nel tuo Drive. Fatto questo, si comincia!' },
+];
+let tourIdx = 0;
+function openTour(){ tourIdx = 0; renderTour(); openModal('modalTour'); }
+function renderTour(){
+    const s = TOUR[tourIdx], last = tourIdx === TOUR.length - 1;
+    $('tourBody').innerHTML = `
+        <button class="tour-skip" onclick="finishTour()">Salta</button>
+        <div class="tour-icon">${s.i}</div>
+        <div class="modal-title" style="text-align:center;">${s.t}</div>
+        <p class="tour-text">${s.b}</p>
+        <div class="tour-dots">${TOUR.map((_, i) => `<i class="${i === tourIdx ? 'on' : ''}"></i>`).join('')}</div>
+        <div class="modal-btns">
+            ${tourIdx ? `<button class="btn btn-secondary" onclick="tourIdx--;renderTour()">Indietro</button>` : ''}
+            <button class="btn btn-primary" onclick="${last ? 'finishTour()' : 'tourIdx++;renderTour()'}">${last ? 'Iniziamo' : 'Avanti'}</button>
+        </div>`;
+}
+function finishTour(){
+    const first = !ui.tourSeen;
+    ui.tourSeen = true; saveUi();
+    closeModal('modalTour');
+    if (first) setTimeout(maybeCheckin, 350);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1917,7 +2454,7 @@ function renderTidy(app){
         </div>`;
     }
     app.innerHTML = `
-        <div class="sec-head"><div><div class="sec-title">Riordino</div><div class="sec-sub">${st.tidyMin} minuti al giorno, una stanza alla volta</div></div>
+        <div class="sec-head"><div><div class="sec-title">Riordino ${helpBtn('tidy')}</div><div class="sec-sub">${st.tidyMin} minuti al giorno, una stanza alla volta</div></div>
             ${streak ? `<span class="streak">${streak} ${streak === 1 ? 'giorno' : 'giorni'} di fila</span>` : ''}</div>
         ${timerHtml}
         ${recent.length ? `<div class="block card"><div class="block-title"><span>Ultime volte</span></div>
@@ -2056,7 +2593,7 @@ function renderShop(app){
     const n = data.shopItems.filter(i => i.need).length;
     const lastCat = getShopCat(ui.lastShopCat) ? ui.lastShopCat : (cats[0] && cats[0].id);
     app.innerHTML = `
-        <div class="shop-head"><span class="shop-count-num" id="shopCount">${n}</span><span class="shop-count-label">da comprare</span></div>
+        <div class="shop-head"><span class="shop-count-num" id="shopCount">${n}</span><span class="shop-count-label">da comprare</span>${helpBtn('shop')}</div>
         <div class="shop-actions">
             <button class="btn btn-primary" onclick="printShopping()">Stampa / PDF</button>
             <button class="btn btn-secondary" id="docBtn" onclick="createShoppingDoc()">Google Doc</button>
@@ -2358,12 +2895,13 @@ function shareDocLink(){
 // ═══════════════════════════════════════════════════════════════════════════
 //  SYNC, BACKUP, SCRIPT
 // ═══════════════════════════════════════════════════════════════════════════
-const APPS_SCRIPT_CODE = `// Casa Hub — Apps Script v1 (sync + liste della spesa in Google Docs)
+const APPS_SCRIPT_CODE = `// Casa Hub — Apps Script v2 (sync + liste della spesa in Google Docs + foto delle stanze)
 // Crealo da un Foglio Google tutto suo: Estensioni → Apps Script.
 const SHEET_NAME = 'CasaHub';
 const CHUNK = 45000;
 const FOLDER_NAME = 'Casa Hub - Liste spesa';
 const KEEP_DAYS = 60; // le liste più vecchie finiscono nel cestino
+const PHOTO_FOLDER = 'Casa Hub - Foto';
 
 function doGet(e) {
   if (e && e.parameter && e.parameter.action === 'read') {
@@ -2375,18 +2913,21 @@ function doGet(e) {
       .join('');
     return out(txt || '{}');
   }
+  if (e && e.parameter && e.parameter.action === 'imgget') return getImage(e.parameter.id);
   return out(JSON.stringify({ error: 'unknown action' }));
 }
 
 function doPost(e) {
   if (e && e.parameter && e.parameter.action === 'doc') return createShoppingDoc(e);
+  if (e && e.parameter && e.parameter.action === 'imgput') return putImage(e);
+  if (e && e.parameter && e.parameter.action === 'imgdel') return deleteImage(e);
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
     const body = e.postData.contents;
     const obj = JSON.parse(body);
     // protezione: scrive solo dati di Casa Hub, mai una richiesta di documento
-    if (!obj || obj.kind === 'doc' || !Array.isArray(obj.tasks)) throw new Error('dati non validi');
+    if (!obj || obj.kind || !Array.isArray(obj.tasks)) throw new Error('dati non validi');
     const sheet = getSheet();
     const rows = [];
     for (let i = 0; i < body.length; i += CHUNK) rows.push(['~' + body.substring(i, i + CHUNK)]);
@@ -2444,6 +2985,52 @@ function cleanupOldLists() {
       if (f.getDateCreated().getTime() < limit) f.setTrashed(true);
     }
   } catch (err) {}
+}
+
+// ── Foto delle stanze: file JPEG nella cartella "Casa Hub - Foto" del tuo Drive ──
+function getPhotoFolder() {
+  const it = DriveApp.getFoldersByName(PHOTO_FOLDER);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(PHOTO_FOLDER);
+}
+
+// sicurezza: lo script legge o cancella SOLO file che stanno nella cartella delle foto
+function photoFile(id) {
+  const f = DriveApp.getFileById(String(id));
+  const folderId = getPhotoFolder().getId();
+  const parents = f.getParents();
+  while (parents.hasNext()) if (parents.next().getId() === folderId) return f;
+  throw new Error('file non consentito');
+}
+
+function putImage(e) {
+  try {
+    const p = JSON.parse(e.postData.contents);
+    if (!p || p.kind !== 'img' || !p.data) throw new Error('immagine mancante');
+    const blob = Utilities.newBlob(Utilities.base64Decode(p.data), p.mime || 'image/jpeg', String(p.id || 'foto') + '.jpg');
+    const f = getPhotoFolder().createFile(blob);
+    return out(JSON.stringify({ ok: true, fileId: f.getId() }));
+  } catch (err) {
+    return out(JSON.stringify({ error: String(err && err.message || err) }));
+  }
+}
+
+function getImage(id) {
+  try {
+    const b = photoFile(id).getBlob();
+    return out(JSON.stringify({ ok: true, mime: b.getContentType(), data: Utilities.base64Encode(b.getBytes()) }));
+  } catch (err) {
+    return out(JSON.stringify({ error: String(err && err.message || err) }));
+  }
+}
+
+function deleteImage(e) {
+  try {
+    const p = JSON.parse(e.postData.contents);
+    photoFile(p.fileId).setTrashed(true);
+    return out(JSON.stringify({ ok: true }));
+  } catch (err) {
+    return out(JSON.stringify({ error: String(err && err.message || err) }));
+  }
 }
 
 function getSheet() {
@@ -2548,6 +3135,7 @@ async function doSync(silent){
         }
         lastSyncAt = Date.now();
         setSyncStatus('ok');
+        uploadPending();
         if (!silent) showToast(`✓ Sincronizzato alle ${new Date().toLocaleTimeString('it-IT', { hour:'2-digit', minute:'2-digit' })}`);
     } catch (e) {
         setSyncStatus('error');
@@ -2558,7 +3146,7 @@ async function doSync(silent){
 }
 function openSyncModal(){
     const urlShort = syncUrl.length > 54 ? syncUrl.substring(0, 54) + '…' : syncUrl;
-    $('syncModalBody').innerHTML = (syncUrl ? `
+    $('syncModalBody').innerHTML = (_photoSyncError ? `<div class="sheet-info">${escHtml(_photoSyncError)}</div>` : '') + (syncUrl ? `
         <div class="sync-info-row"><span class="sync-status-dot ${getSyncStatus() === 'error' ? 'error' : 'connected'}"></span><span class="sync-info-text">${escHtml(urlShort)}</span></div>
         <p class="confirm-msg" style="font-size:.78rem;">Collegato. Ogni impegno e ogni prodotto si unisce singolarmente: vince la modifica più recente. Sync automatica 20 secondi dopo ogni modifica, ogni 5 minuti e quando torni nell'app.</p>
         <button class="btn btn-primary" onclick="closeModal('modalSync');doSync(false)">Sincronizza ora</button>
@@ -2579,7 +3167,7 @@ function openSyncModal(){
                 <li>Dal foglio: Estensioni → Apps Script. Cancella il contenuto, incolla il codice qui sotto e salva.</li>
                 <li>Esegui il deployment → Nuovo deployment → tipo App web. Esegui come: Me. Chi ha accesso: Chiunque.</li>
                 <li>Autorizza (Google chiede accesso a Fogli, Documenti e Drive: servono per sync e liste) e copia l'URL che finisce con /exec.</li>
-            </ol>Se in futuro modifichi lo script: Gestisci deployment → Modifica → Nuova versione. L'URL resta lo stesso.</div>
+            </ol><b>Hai già lo script della versione precedente?</b> Incolla il nuovo codice al posto del vecchio, salva, poi Esegui il deployment → Gestisci deployment → ✎ Modifica → Versione: Nuova versione → Esegui il deployment. Autorizza di nuovo se Google lo chiede. L'URL resta lo stesso.</div>
             <button class="btn btn-secondary" style="margin:0 0 8px;" onclick="copyText(APPS_SCRIPT_CODE,'Codice copiato')">Copia il codice</button>
             <textarea readonly onclick="this.select()" class="mono" style="font-size:.62rem;min-height:160px;color:var(--text-dim);">${escHtml(APPS_SCRIPT_CODE)}</textarea>
         </div>
@@ -2638,6 +3226,7 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
         const open = [...document.querySelectorAll('.modal-overlay:not(.hidden)')].pop();
         if (open) closeModal(open.id);
+        else if (vw) closeViewer();
         return;
     }
     if (e.key === 'Enter' && e.target && e.target.dataset && e.target.dataset.enter) {
@@ -2671,8 +3260,11 @@ function init(){
     updateSyncBtn(getSyncStatus());
     if (_loadError) showToast('⚠ Dati locali illeggibili: copia salvata, ripristina da sync o backup');
     // Il check-in parte dopo la prima sync, così non lo rifai se l'hai già fatto sull'altro dispositivo
-    if (syncUrl) setTimeout(async () => { await doSync(true); maybeCheckin(); }, 1200);
-    else setTimeout(maybeCheckin, 400);
+    initViewerGestures();
+    if (!ui.tourSeen) setTimeout(openTour, 300); // primo utilizzo: prima la guida, poi il check-in
+    if (syncUrl) setTimeout(async () => { await doSync(true); if (ui.tourSeen) maybeCheckin(); }, 1200);
+    else if (ui.tourSeen) setTimeout(maybeCheckin, 400);
+    setTimeout(gcPhotos, 8000);
     setInterval(() => {
         if (syncUrl && !syncInProgress && document.visibilityState === 'visible') doSync(true);
         if (_renderDay !== todayStr()) renderWhenIdle();
