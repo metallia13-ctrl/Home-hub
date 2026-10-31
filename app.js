@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  CASA HUB — app.js (v1.1)
+//  CASA HUB — app.js (v1.2)
 //  Impegni di casa (urgenza, categorie, ricorrenze, rinvii), energie con la
 //  teoria dei cucchiaini, lista della spesa
 // ═══════════════════════════════════════════════════════════════════════════
@@ -12,7 +12,10 @@ const UI_KEY = 'casahub_ui';
 const THEME_KEY = 'casahub_theme';
 const SYNC_KEY = 'casahub_sync_url';
 const SYNC_STATUS_KEY = 'casahub_sync_status';
-const CAT_COLORS = ['#9ad1ae','#7dd3fc','#c4b5fd','#f9a8d4','#fdba74','#a5b4fc','#99f6e4','#d6d3d1'];
+// Pastelli caldi: leggibili sia sul cacao (scuro) sia sul burro (chiaro)
+const CAT_COLORS = ['#a7bf8f','#8fb4c9','#c3a4d4','#e3a0a8','#d8b98a','#9cbfae','#a9add8','#bba48f'];
+const OLD_CAT_COLORS = ['#9ad1ae','#7dd3fc','#c4b5fd','#f9a8d4','#fdba74','#a5b4fc','#99f6e4','#d6d3d1']; // v1.0–1.1
+const THEME_COLORS = { dark:'#1c1714', light:'#faf3e8' };
 const DOW_SHORT = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab'];
 const DOW_FULL = ['Domenica','Lunedì','Martedì','Mercoledì','Giovedì','Venerdì','Sabato'];
 const MONTHS_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
@@ -174,6 +177,8 @@ function normalizeData(d){
     d.taskCats.forEach((c, i) => {
         c.name = String(c.name || '').trim() || 'Categoria';
         if (!c.color) c.color = CAT_COLORS[i % CAT_COLORS.length];
+        const oldIdx = OLD_CAT_COLORS.indexOf(String(c.color).toLowerCase());
+        if (oldIdx >= 0) c.color = CAT_COLORS[oldIdx]; // nuova palette, stessa posizione
         if (typeof c.order !== 'number') c.order = i;
         if (!(+c.cost >= 1 && +c.cost <= TASK_COST_MAX)) c.cost = DEFAULT_CAT_COST[c.id] || 2;
         else c.cost = +c.cost;
@@ -347,8 +352,11 @@ function flushPendingRender(){
 
 // ── Tema ────────────────────────────────────────────────────────────────────
 function applyThemeIcon(){
+    const light = document.body.classList.contains('light');
     const b = $('themeBtn');
-    if (b) b.textContent = document.body.classList.contains('light') ? '◐' : '○';
+    if (b) { b.textContent = light ? '☀' : '☾'; b.title = light ? 'Passa al tema sera' : 'Passa al tema giorno'; }
+    const m = document.querySelector('meta[name="theme-color"]');
+    if (m) m.setAttribute('content', light ? THEME_COLORS.light : THEME_COLORS.dark);
 }
 function toggleTheme(){
     document.body.classList.toggle('light');
@@ -363,9 +371,10 @@ function setSection(s){
     render();
 }
 function setView(v){
-    ui.view = v; saveUi();
+    const fromOtherSection = ui.section !== 'tasks';
+    ui.view = v; ui.section = 'tasks'; saveUi();
     weekOffset = 0; selectedDayOffset = null; monthOffset = 0;
-    renderTasks($('appContent'));
+    if (fromOtherSection) render(); else renderTasks($('appContent'));
 }
 function render(){
     _pendingRender = false;
@@ -502,7 +511,7 @@ function taskCardHtml(t, opts = {}){
     const check = t.done
         ? `<button class="task-check checked" onclick="reopenTask(${jsArg(t.id)})" title="Riapri" aria-label="Riapri">✓</button>`
         : `<button class="task-check" onclick="completeTask(${jsArg(t.id)})" title="Segna come fatto" aria-label="Segna come fatto"></button>`;
-    return `<div class="task-card${ghost ? ' ghost' : ''}${t.done ? ' done' : ''}" style="border-left-color:${color}">
+    return `<div class="task-card${ghost ? ' ghost' : ''}${t.done ? ' done' : ''}" style="--c:${color}">
         ${check}
         <div class="task-body" onclick="${open}">
             ${t.time && !opts.hideTime ? `<span class="task-time">${t.time}</span>` : ''}
@@ -538,6 +547,10 @@ function renderTasksArea(){
 }
 
 // ── Oggi ────────────────────────────────────────────────────────────────────
+function greeting(){
+    const h = new Date().getHours();
+    return h >= 5 && h < 13 ? 'Buongiorno' : h >= 13 && h < 18 ? 'Buon pomeriggio' : 'Buonasera';
+}
 function renderToday(area){
     const today = todayStr(), tomorrow = shiftDate(today, 1), now = new Date();
     const open = openTasks();
@@ -551,7 +564,7 @@ function renderToday(area){
     if (late.length) summary.push(`<span class="late"><b style="color:var(--danger)">${late.length}</b> in ritardo</span>`);
     area.innerHTML = `
         <div class="today-head">
-            <div><div class="today-date">${now.getDate()} ${MONTHS_IT[now.getMonth()]}</div><div class="today-dow">${DOW_FULL[now.getDay()]}</div></div>
+            <div><div class="today-greet">${greeting()}</div><div class="today-date">${DOW_FULL[now.getDay()]} ${now.getDate()} ${MONTHS_IT[now.getMonth()].toLowerCase()}</div></div>
             <div class="today-summary">${summary.join('<br>')}</div>
         </div>
         ${energyCardHtml()}
@@ -559,7 +572,7 @@ function renderToday(area){
         ${late.length ? `<div class="block"><div class="block-title late"><span>In ritardo</span><span class="count">${late.length}</span></div>
             ${late.map(t => taskCardHtml(t, { showDate:true })).join('')}</div>` : ''}
         <div class="block"><div class="block-title"><span>Oggi</span><span class="count">${todays.length || ''}</span></div>
-            ${todays.length ? todays.map(t => taskCardHtml(t)).join('') : `<div class="empty-note">Niente in programma per oggi. Tocca + per aggiungere un impegno.</div>`}</div>
+            ${todays.length ? todays.map(t => taskCardHtml(t)).join('') : `<div class="empty-note">Niente in programma per oggi. Se ti viene in mente qualcosa, tocca +.</div>`}</div>
         ${tomorrows.length ? `<div class="block"><div class="block-title"><span>Domani</span><span class="count">${tomorrows.length}</span></div>
             ${tomorrows.map(t => taskCardHtml(t)).join('')}</div>` : ''}
         ${undated.length ? `<div class="block"><div class="block-title"><span>Quando capita</span><span class="count">${undated.length}</span></div>
@@ -1100,6 +1113,8 @@ const CHECKIN_QS = [
     { key:'mind', label:'E la testa?', opts:['Lucida','Un po’ carica','Sotto stress','Annebbiata'] },
 ];
 function settings(){ return data.settings[0]; }
+// Un cucchiaino disegnato: coppa ovale + manico
+const SPOON_SVG = '<svg viewBox="0 0 12 34" aria-hidden="true"><path class="sp-fill" d="M6 1.2c2.9 0 4.8 2.6 4.8 6.1 0 3-1.6 5.3-3.6 5.9v18.3c0 .7-.5 1.3-1.2 1.3s-1.2-.6-1.2-1.3V13.2C2.8 12.6 1.2 10.3 1.2 7.3 1.2 3.8 3.1 1.2 6 1.2z"/></svg>';
 function effectiveCost(t){
     if (t.cost) return t.cost;
     const c = getCat(t.catId), s = getSub(c, t.subId);
@@ -1289,7 +1304,7 @@ function energyCardHtml(){
         let cls = i < used ? 'spent' : i < total ? 'planned' : 'free';
         if (i >= S) cls += ' over';
         else if (i >= S - R) cls += ' reserve';
-        return `<span class="spoon-cell ${cls}"></span>`;
+        return `<span class="spoon ${cls}">${SPOON_SVG}</span>`;
     }).join('');
     const left = S - used, freeBeyond = S - R - total;
     const { excess, moves } = suggestMoves();
@@ -1369,7 +1384,7 @@ function renderEnergyView(area){
     const fixed = fixedFor(today);
     const extras = d ? d.extras : [], done = d ? d.done : [];
     area.innerHTML = `
-        <div class="block">
+        <div class="block card">
             <div class="block-title"><span>Oggi</span><span class="count">${checked ? `${spentOn(today)} spesi su ${d.spoons}` : ''}</span></div>
             ${checked ? `<div class="e-summary">${ans.length ? escHtml(ans.join('. ')) + '.' : ''}${d.debt ? ` Debito da ieri: −${d.debt}.` : ''}</div>
                 <button class="btn btn-secondary" style="margin-top:0;" onclick="openCheckin()">Rifai il check-in</button>`
@@ -1389,14 +1404,14 @@ function renderEnergyView(area){
             </div>
             ${done.length ? `<div class="field-label">Fatti oggi</div>${done.map(e => `<div class="e-row static"><span class="e-name">${escHtml(e.title)}</span><span class="m-spoon">🥄${e.cost}</span></div>`).join('')}` : ''}
         </div>
-        <div class="block"><div class="block-title"><span>Andamento</span><span class="count">14 giorni</span></div>${energyChartHtml()}</div>
-        <div class="block"><div class="block-title"><span>Spese fisse</span></div>
+        <div class="block card"><div class="block-title"><span>Andamento</span><span class="count">14 giorni</span></div>${energyChartHtml()}</div>
+        <div class="block card"><div class="block-title"><span>Spese fisse</span></div>
             ${data.fixedCosts.map(f => `<div class="e-row" onclick="openFixedModal(${jsArg(f.id)})"><span class="e-name">${escHtml(f.name)}
                 <span class="e-days">${f.days.length ? f.days.map(n => ISO_DOW_LABELS[n].toLowerCase()).join(', ') : 'ogni giorno'}</span></span><span class="m-spoon">🥄${f.cost}</span></div>`).join('')
                 || `<div class="empty-note">Nessuna spesa fissa. Aggiungi le cose che fai quasi ogni giorno: igiene, lezioni, lavoro.</div>`}
             <button class="btn btn-secondary" onclick="openFixedModal()">+ Spesa fissa</button>
         </div>
-        <div class="block"><div class="block-title"><span>Impostazioni</span></div>
+        <div class="block card"><div class="block-title"><span>Impostazioni</span></div>
             <div class="set-row"><div><div class="set-name">Giornata buona</div><div class="set-desc">Cucchiaini quando stai bene</div></div>
                 <div class="stepper"><button onclick="stepSetting('max',-1)" aria-label="Meno">−</button><span>${st.max}</span><button onclick="stepSetting('max',1)" aria-label="Più">+</button></div></div>
             <div class="set-row"><div><div class="set-name">Riserva</div><div class="set-desc">Cucchiaini da non pianificare mai</div></div>

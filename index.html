@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Casa Hub</title>
-    <meta name="theme-color" content="#0a0a0a">
+    <meta name="theme-color" content="#1c1714">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -14,7 +14,7 @@
     <link rel="apple-touch-icon" href="apple-touch-icon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;700&family=Josefin+Sans:wght@300;400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,400..700,100&family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <script src="app.js" defer></script>
 </head>
@@ -24,9 +24,9 @@
 <nav class="topbar">
     <button class="section-tab" id="tabTasks" onclick="setSection('tasks')">Impegni <span class="tab-badge" id="badgeTasks"></span></button>
     <button class="section-tab" id="tabShop" onclick="setSection('shop')">Spesa <span class="tab-badge" id="badgeShop"></span></button>
-    <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Tema chiaro/scuro">○</button>
+    <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Tema">☾</button>
     <button class="sync-btn" id="syncBtn" onclick="openSyncModal()" title="Sincronizzazione e backup">
-        <span id="syncDot" class="sync-status-dot"></span><span id="syncLabel">Sync</span>
+        <span id="syncDot" class="sync-status-dot"></span><span class="sync-ico" aria-hidden="true">☁</span><span id="syncLabel">Sync</span>
     </button>
 </nav>
 
