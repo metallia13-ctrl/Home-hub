@@ -5,8 +5,8 @@
 // IMPORTANTE: cancella solo le PROPRIE cache (prefisso casahub-). Study Hub vive
 // sullo stesso dominio github.io e le cache sono condivise per dominio.
 const CACHE_PREFIX = 'casahub-';
-const CACHE_VERSION = CACHE_PREFIX + 'v1.4';
-const APP_SHELL = ['./', './index.html', './style.css?v=1.4', './app.js?v=1.4', './manifest.webmanifest',
+const CACHE_VERSION = CACHE_PREFIX + 'v1.5';
+const APP_SHELL = ['./', './index.html', './style.css?v=1.5', './app.js?v=1.5', './manifest.webmanifest',
                    './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

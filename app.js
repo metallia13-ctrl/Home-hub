@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  CASA HUB — app.js (v1.4)
+//  CASA HUB — app.js (v1.5)
 //  Impegni di casa (urgenza, categorie, ricorrenze, rinvii), energie con la
 //  teoria dei cucchiaini, lista della spesa
 // ═══════════════════════════════════════════════════════════════════════════
@@ -22,10 +22,12 @@ const MONTHS_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Lugl
 const ISO_DOW_LABELS = { 1:'Lun', 2:'Mar', 3:'Mer', 4:'Gio', 5:'Ven', 6:'Sab', 7:'Dom' };
 const URG_LABEL = { 1:'Normale', 2:'Importante', 3:'Urgente' };
 const REC_UNITS = ['day','week','month','year'];
-const COLLS = ['tasks','taskCats','shopCats','shopItems','days','fixedCosts','settings','rooms','projects','tidy','photos'];
-const SECTIONS = ['tasks','tidy','rooms','shop'];
+const COLLS = ['tasks','taskCats','shopCats','shopItems','days','fixedCosts','settings','rooms','projects','tidy','photos','fridge','fridgeLog'];
+const SECTIONS = ['tasks','tidy','rooms','fridge','shop'];
 const VIEWS = ['today','day','week','month','list','energy'];
 const TASK_COST_MAX = 4, OTHER_COST_MAX = 8;
+// Zone dell'inventario (usate anche in normalizeData, quindi definite qui in alto)
+const FRIDGE_ZONES = { fridge:'Frigo', freezer:'Freezer', pantry:'Dispensa' };
 const DAY_MS = 864e5;
 
 // ── Utility ─────────────────────────────────────────────────────────────────
@@ -112,7 +114,8 @@ const DEFAULT_FIXED = [
     ['pasti', 'Preparare e mangiare i pasti', 1, []],
     ['lezioni', 'Lezioni', 3, [1,2,3,4,5]],
 ];
-function defaultSettings(){ return { id:'main', max:12, reserve:1, debt:true, calib:true, tidyMin:15, tidyCost:1, tidyDaily:true, _mod:1 }; }
+function defaultSettings(){ return { id:'main', spoons:true, max:12, reserve:1, debt:true, calib:true, tidyMin:15, tidyCost:1, tidyDaily:true,
+    fridgeRemind:false, fridgeDays:1, fridgeHour:8, fridgeChannel:'calendar', _mod:1 }; }
 const DEFAULT_ROOMS = ['Cucina','Bagno','Soggiorno','Camera da letto','Ingresso'];
 function defaultRooms(){ return DEFAULT_ROOMS.map((name, i) => ({ id:'d_rm_' + slug(name), name, order:i, _mod:1 })); }
 function defaultFixed(){ return DEFAULT_FIXED.map(([k, name, cost, days]) => ({ id:'d_fx_' + k, name, cost, days:[...days], _mod:1 })); }
@@ -127,7 +130,7 @@ const DEFAULT_SHOP = [
     ['pulizia', 'Casa e pulizia', ['Detersivo piatti','Detersivo lavatrice','Carta igienica','Carta da cucina','Sacchi spazzatura','Spugne']],
     ['igiene', 'Igiene personale', ['Shampoo','Bagnoschiuma','Dentifricio','Deodorante']],
 ];
-function emptyData(){ return { v:1, tasks:[], taskCats:[], shopCats:[], shopItems:[], days:[], fixedCosts:[], settings:[], rooms:[], projects:[], tidy:[], photos:[], deleted:{}, lastModified:0 }; }
+function emptyData(){ return { v:1, tasks:[], taskCats:[], shopCats:[], shopItems:[], days:[], fixedCosts:[], settings:[], rooms:[], projects:[], tidy:[], fridge:[], fridgeLog:[], photos:[], deleted:{}, lastModified:0 }; }
 function seedDefaults(d){
     d.taskCats = DEFAULT_TASK_CATS.map(([k, name, subs], i) => ({
         id:'d_tc_' + k, name, color:CAT_COLORS[i % CAT_COLORS.length], order:i,
@@ -233,6 +236,27 @@ function normalizeData(d){
     st.tidyMin = clamp(parseInt(st.tidyMin, 10) || 15, 5, 60);
     st.tidyCost = normCost(st.tidyCost, 0, TASK_COST_MAX) ?? 1;
     st.tidyDaily = st.tidyDaily !== false;
+    st.spoons = st.spoons !== false;                 // teoria dei cucchiaini attiva (disattivabile)
+    st.fridgeRemind = !!st.fridgeRemind;             // promemoria scadenze tramite lo script Google
+    st.fridgeDays = st.fridgeDays === undefined ? 1 : clamp(parseInt(st.fridgeDays, 10) || 0, 0, 7); // giorni di anticipo
+    st.fridgeHour = clamp(parseInt(st.fridgeHour, 10) || 8, 5, 22);
+    st.fridgeChannel = ['calendar','email','both'].includes(st.fridgeChannel) ? st.fridgeChannel : 'calendar';
+    // ── Frigo ──
+    d.fridge = d.fridge.filter(x => x && x.name);
+    d.fridge.forEach(x => {
+        x.name = String(x.name).trim() || 'Prodotto';
+        x.qty = typeof x.qty === 'string' ? x.qty : '';
+        x.zone = FRIDGE_ZONES[x.zone] ? x.zone : 'fridge';
+        x.expiry = isIso(x.expiry) ? x.expiry : null;
+        x.openedAt = isIso(x.openedAt) ? x.openedAt : null;
+        x.openDays = x.openedAt ? clamp(parseInt(x.openDays, 10) || 3, 1, 60) : null;
+        x.added = isIso(x.added) ? x.added : todayStr();
+    });
+    d.fridgeLog = d.fridgeLog.filter(x => x && x.name && isIso(x.date));
+    d.fridgeLog.forEach(x => {
+        x.outcome = x.outcome === 'wasted' ? 'wasted' : 'eaten';
+        x.days = (typeof x.days === 'number' && x.days >= 0) ? Math.round(x.days) : null;
+    });
     // ── Stanze, progetti, riordino ──
     if (migrateRooms && !d.rooms.length) d.rooms = defaultRooms();
     // v1.4: i Progetti diventano liste delle Stanze. ID fissi e _mod:1, così ogni
@@ -328,6 +352,7 @@ function loadUi(){
         roomId: u.roomId || null,
         photoFilter: ['all','now','goal','idea'].includes(u.photoFilter) ? u.photoFilter : 'all',
         tourSeen: !!u.tourSeen,
+        fridgeZone: u.fridgeZone || 'all',
         penColor: u.penColor || null, penSize: [1, 2, 4].includes(u.penSize) ? u.penSize : 2, penOnly: !!u.penOnly,
         showDoneProjects: !!u.showDoneProjects,
         tidyRoom: u.tidyRoom || null,
@@ -469,6 +494,7 @@ function render(){
     if (ui.section === 'shop') renderShop(app);
     else if (ui.section === 'rooms') renderRooms(app);
     else if (ui.section === 'tidy') renderTidy(app);
+    else if (ui.section === 'fridge') renderFridge(app);
     else renderTasks(app);
     updateBadges();
 }
@@ -481,6 +507,12 @@ function updateBadges(){
     if (bt) { bt.textContent = due || ''; bt.classList.toggle('alert', late > 0); bt.title = late ? `${late} in ritardo` : ''; }
     if (bs) { const n = data.shopItems.filter(i => i.need).length; bs.textContent = n || ''; }
     if (bd) { bd.textContent = tidyBadgeText(); bd.classList.toggle('ok', !!tidyOn(today).length && !ui.timer); }
+    const bf = $('badgeFridge');
+    if (bf) {
+        const urgent = data.fridge.filter(x => { const d = daysToExpiry(x); return d !== null && d <= 1; });
+        bf.textContent = urgent.length || '';
+        bf.classList.toggle('alert', urgent.some(x => daysToExpiry(x) < 0));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -577,7 +609,7 @@ function buildIndex(from, to){
 function taskMetaHtml(t, opts = {}){
     const parts = [];
     const today = todayStr();
-    parts.push(`<span class="m-spoon" title="Cucchiaini">🥄${fmtSp(effectiveCost(t))}</span>`);
+    if (spoonsOn()) parts.push(`<span class="m-spoon" title="Cucchiaini">🥄${fmtSp(effectiveCost(t))}</span>`);
     const rm = t.roomId ? getRoom(t.roomId) : null;
     if (rm) parts.push(`<span>⌂ ${escHtml(rm.name)}</span>`);
     if (opts.showDate && t.date) {
@@ -618,7 +650,7 @@ function itemsHtml(items, empty = 'Niente in programma'){
 function renderTasks(app){
     const v = ui.view;
     const vb = (id, label) => `<button class="view-btn${v === id ? ' active' : ''}" onclick="setView('${id}')">${label}</button>`;
-    app.innerHTML = `<div class="view-toggle">${vb('today','Oggi')}${vb('day','Giorno')}${vb('week','Settimana')}${vb('month','Mese')}${vb('list','Elenco')}${vb('energy','Energia')}${helpBtn(ui.view === 'energy' ? 'energy' : 'tasks')}</div>
+    app.innerHTML = `<div class="view-toggle">${vb('today','Oggi')}${vb('day','Giorno')}${vb('week','Settimana')}${vb('month','Mese')}${vb('list','Elenco')}${spoonsOn() ? vb('energy','Energia') : ''}${helpBtn(ui.view === 'energy' ? 'energy' : 'tasks')}</div>
         <div id="tasksArea"></div>`;
     const tg = app.querySelector('.view-toggle'), act = tg && tg.querySelector('.view-btn.active');
     if (act) tg.scrollLeft = Math.max(0, act.offsetLeft - tg.offsetLeft - 24);
@@ -627,6 +659,7 @@ function renderTasks(app){
 function renderTasksArea(){
     const area = $('tasksArea');
     if (!area) return;
+    if (ui.view === 'energy' && !spoonsOn()) { ui.view = 'today'; saveUi(); }
     if (ui.view === 'today') renderToday(area);
     else if (ui.view === 'day') renderDayView(area);
     else if (ui.view === 'week') renderWeekView(area);
@@ -657,6 +690,7 @@ function renderToday(area){
             <div class="today-summary">${summary.join('<br>')}</div>
         </div>
         ${energyCardHtml()}
+        ${fridgeTodayHtml()}
         ${late.length + todays.length ? `<button class="imprevisto-btn" onclick="openImprevisto()">Imprevisto: rimanda a domani</button>` : ''}
         ${late.length ? `<div class="block"><div class="block-title late"><span>In ritardo</span><span class="count">${late.length}</span></div>
             ${late.map(t => taskCardHtml(t, { showDate:true })).join('')}</div>` : ''}
@@ -845,7 +879,7 @@ function completeTask(id){
         restoreDay(today, dayBefore);
         restoreTask(before);
     } });
-    if (settings().calib) openCalib(t.id, entry.ts, expected);
+    if (spoonsOn() && settings().calib) openCalib(t.id, entry.ts, expected);
 }
 function reopenTask(id){
     const t = findTask(id);
@@ -892,7 +926,7 @@ function planTo(id, iso){
     if (t.rec) { t.sched = iso; t.anchor = iso; }
     save(); closeModal('modalSheet'); render();
     const over = loadOn(iso) - budgetOn(iso);
-    showToast(over > 0 ? `In programma ${fmtRel(iso)}, ma sfori di ${fmtSp(over)} 🥄` : `In programma ${fmtRel(iso)}`, { label:'Annulla', fn:() => restoreTask(before) });
+    showToast(spoonsOn() && over > 0 ? `In programma ${fmtRel(iso)}, ma sfori di ${fmtSp(over)} 🥄` : `In programma ${fmtRel(iso)}`, { label:'Annulla', fn:() => restoreTask(before) });
 }
 function planTask(id, days){ planTo(id, shiftDate(todayStr(), days)); }
 function planPicked(id){
@@ -917,7 +951,7 @@ function openTaskSheet(id, ghostDate){
     if (t.date && t.date < today && !t.done) rows.push(['Stato', '<span style="color:var(--danger)">In ritardo</span>']);
     rows.push(['Categoria', c ? escHtml(c.name + (s ? ' › ' + s.name : '')) : 'Nessuna']);
     rows.push(['Urgenza', `<span style="color:${taskColor(t)}">${URG_LABEL[t.urg]}</span>`]);
-    rows.push(['Cucchiaini', `🥄 ${fmtSp(effectiveCost(t))}${t.cost !== null ? '' : ' <span style="color:var(--text-dim)">(predefinito)</span>'}`]);
+    if (spoonsOn()) rows.push(['Cucchiaini', `🥄 ${fmtSp(effectiveCost(t))}${t.cost !== null ? '' : ' <span style="color:var(--text-dim)">(predefinito)</span>'}`]);
     const rm = t.roomId ? getRoom(t.roomId) : null;
     if (rm) rows.push(['Stanza', escHtml(rm.name)]);
     if (t.rec) rows.push(['Si ripete', escHtml(recLabel(t.rec))]);
@@ -1068,6 +1102,7 @@ function openTaskModal(id){
     const t = id ? findTask(id) : null;
     editingTaskId = t ? t.id : null;
     $('taskModalTitle').textContent = t ? 'Modifica impegno' : 'Nuovo impegno';
+    $('tCostWrap').classList.toggle('hidden', !spoonsOn());
     $('tTitle').value = t ? t.title : '';
     formCost = t ? t.cost : null;
     fillRoomSelect(t ? t.roomId : (ui.section === 'rooms' ? ui.roomId : null));
@@ -1115,7 +1150,7 @@ function saveTask(){
     }
     save(); closeModal('modalTask'); render();
     // Avvisa subito se quel giorno supera le energie disponibili
-    const over = date && date >= todayStr() ? loadOn(date) - budgetOn(date) : 0;
+    const over = spoonsOn() && date && date >= todayStr() ? loadOn(date) - budgetOn(date) : 0;
     if (over > 0) showToast(`${editingTaskId ? 'Aggiornato' : 'Aggiunto'}, ma ${fmtRel(date)} sfori di ${fmtSp(over)} 🥄`);
     else showToast(editingTaskId ? 'Impegno aggiornato' : 'Impegno aggiunto');
     editingTaskId = null;
@@ -1250,6 +1285,7 @@ const CHECKIN_QS = [
     { key:'mind', label:'E la testa?', opts:['Lucida','Un po’ carica','Sotto stress','Annebbiata'] },
 ];
 function settings(){ return data.settings[0]; }
+function spoonsOn(){ return settings().spoons !== false; }
 // Un cucchiaino disegnato: coppa ovale + manico
 const SPOON_SVG = '<svg viewBox="0 0 12 34" aria-hidden="true"><path class="sp-fill" d="M6 1.2c2.9 0 4.8 2.6 4.8 6.1 0 3-1.6 5.3-3.6 5.9v18.3c0 .7-.5 1.3-1.2 1.3s-1.2-.6-1.2-1.3V13.2C2.8 12.6 1.2 10.3 1.2 7.3 1.2 3.8 3.1 1.2 6 1.2z"/></svg>';
 function effectiveCost(t){
@@ -1296,6 +1332,7 @@ function loadOn(iso, idx){
     return qr(spentOn(iso) + items.reduce((n, it) => n + effectiveCost(it.t), 0) + tidyPlannedOn(iso));
 }
 function loadTagHtml(iso, idx){
+    if (!spoonsOn()) return '';
     const today = todayStr();
     if (iso < today && !hasCheckin(iso)) return '';
     const load = loadOn(iso, idx);
@@ -1308,6 +1345,7 @@ function loadTagHtml(iso, idx){
     return `<span class="load-tag${load > bud ? ' over' : ''}" title="Carico previsto su energie (riserva esclusa)">🥄 ${fmtSp(load)}/${est}${fmtSp(bud)}</span>`;
 }
 function dayLoadLine(iso, idx){
+    if (!spoonsOn()) return '';
     const today = todayStr();
     if (iso < today) {
         if (!hasCheckin(iso)) return '';
@@ -1338,6 +1376,7 @@ function proposeSpoons(ans, debt){
 let ci = null;
 function isFirstCheckin(){ return !data.days.some(d => typeof d.spoons === 'number'); }
 function maybeCheckin(){
+    if (!spoonsOn()) return;
     const today = todayStr();
     if (hasCheckin(today) || ui.checkinSkip === today || anyModalOpen()) return;
     openCheckin();
@@ -1431,6 +1470,7 @@ function suggestMoves(){
     return { excess:Math.max(0, excess), moves };
 }
 function energyCardHtml(){
+    if (!spoonsOn()) return '';
     const today = todayStr(), st = settings();
     if (!hasCheckin(today)) return `<div class="energy-card"><div class="energy-empty">
         <span>Fai il check-in per sapere quanti cucchiaini hai oggi.</span>
@@ -1778,7 +1818,7 @@ function photoTileHtml(p){
 }
 function stepRowHtml(t, i, n){
     const a = jsArg(t.id);
-    const meta = [`🥄${fmtSp(effectiveCost(t))}`];
+    const meta = spoonsOn() ? [`🥄${fmtSp(effectiveCost(t))}`] : [];
     if (t.date) meta.push(fmtRel(t.date) + (t.time ? ' ' + t.time : ''));
     if (t.rec) meta.push('↻ ' + recLabel(t.rec));
     return `<div class="step-row${t.done ? ' done' : ''}">
@@ -1798,7 +1838,7 @@ function renderRoomDetail(app, r){
     app.innerHTML = `
         <button class="link-btn back" onclick="closeRoom()">‹ Stanze</button>
         <div class="sec-head" style="margin-top:4px;"><div><div class="sec-title">${escHtml(r.name)} ${helpBtn('room')}</div>
-            <div class="sec-sub">${st.total ? `${st.done} di ${st.total} fatte${st.left ? ` · mancano ${fmtSp(st.left)} cucchiaini` : ''}` : 'Aggiungi foto e cose da fare'}</div></div></div>
+            <div class="sec-sub">${st.total ? `${st.done} di ${st.total} fatte${st.left && spoonsOn() ? ` · mancano ${fmtSp(st.left)} cucchiaini` : ''}` : 'Aggiungi foto e cose da fare'}</div></div></div>
         <div class="block card">
             <div class="block-title"><span>Foto</span><button class="add-btn" onclick="pickPhoto()">+ Foto</button></div>
             ${photos.length ? `<div class="chip-row">${['all','now','goal','idea'].map(k => `<button class="chip${filt === k ? ' on' : ''}" onclick="ui.photoFilter='${k}';saveUi();render()">${k === 'all' ? 'Tutte' : PHOTO_KINDS[k]} · ${cnt(k)}</button>`).join('')}</div>
@@ -1810,7 +1850,7 @@ function renderRoomDetail(app, r){
             ${open.map((t, i) => stepRowHtml(t, i, open.length)).join('') || `<div class="empty-note">Niente in lista.</div>`}
             <div class="step-add">
                 <input type="text" id="stepTitle" placeholder="Cosa c’è da fare? (es. montare il Kallax)" maxlength="140" onkeydown="if(event.key==='Enter'){event.preventDefault();addRoomTask();}">
-                <div class="sp-stepper on"><button type="button" onclick="stepCost=clamp(qr(stepCost-0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Meno">−</button><span id="stepCostVal">🥄 ${fmtSp(stepCost)}</span><button type="button" onclick="stepCost=clamp(qr(stepCost+0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Più">+</button></div>
+                <div class="sp-stepper on${spoonsOn() ? '' : ' hidden'}"><button type="button" onclick="stepCost=clamp(qr(stepCost-0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Meno">−</button><span id="stepCostVal">🥄 ${fmtSp(stepCost)}</span><button type="button" onclick="stepCost=clamp(qr(stepCost+0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Più">+</button></div>
                 <button class="add-btn" onclick="addRoomTask()">Aggiungi</button>
             </div>
             <div class="e-hint">Le cose senza data restano qui. Toccane una e scegli un giorno: finirà negli impegni e nelle energie.</div>
@@ -2322,6 +2362,17 @@ const HELP = {
         'Con <b>due dita</b> ingrandisci e sposti. Da ingrandita il tratto resta fine: comodo per scrivere su dettagli piccoli.',
         '<b>Solo pennina</b>: disegna solo la pennina, le dita servono per spostarti (e puoi appoggiare il palmo).',
         '<b>Condividi</b> crea un’immagine con i disegni “stampati” sopra, da mandare su WhatsApp o salvare.'] },
+    fridge:{ t:'Frigo', b:[
+        'Scrivi cosa metti dentro e scegli tra quanto scade: “Di solito” propone la durata tipica, “Come l’altra volta” quella che hai usato tu.',
+        'Tocca un prodotto per cambiarlo o segnarlo come <b>aperto</b>: latte, sughi e affettati aperti durano pochi giorni, e la scadenza si accorcia da sola.',
+        'Quando esce dal frigo: <b>✓ Consumato</b> o <b>Buttato</b>. Puoi rimetterlo nella lista della spesa con un tocco. In fondo vedi quanto hai buttato questo mese.',
+        'Dopo “Spesa fatta” l’app ti propone di mettere in frigo i prodotti freschi appena comprati.',
+        'I <b>promemoria</b> si attivano con 🔔: arrivano come notifica del Calendario o email anche ad app chiusa.'] },
+    remind:{ t:'Come funzionano i promemoria', b:[
+        'Un’app web non può mandare notifiche affidabili quando è chiusa. Per questo il controllo lo fa il tuo script Google, ogni giorno all’ora scelta.',
+        'Se qualcosa sta per scadere, crea un evento nel calendario <b>“Casa Hub”</b> con un avviso: la notifica arriva dall’app Google Calendar dopo circa 5 minuti. Oppure ti manda un’email.',
+        'La prima volta: aggiorna lo script (Sync → Script Google), poi nell’editor scegli la funzione <b>autorizza</b> e premi Esegui, accettando i permessi. Fai il deployment di una nuova versione e torna qui ad attivare.',
+        'Nell’app Google Calendar controlla che il calendario “Casa Hub” sia visibile e sincronizzato. “Manda una prova adesso” verifica che tutto funzioni.'] },
     shop:{ t:'Spesa', b:[
         'Tocca un prodotto per segnarlo <b>da comprare</b>; con ⋯ aggiungi quantità o note. Scrivi nel campo in alto per cercare o aggiungere.',
         '<b>Stampa / PDF</b> crea la lista divisa per reparti. <b>Google Doc</b> la salva nel tuo Drive. <b>Invia</b> la manda su WhatsApp o altre app.',
@@ -2342,9 +2393,10 @@ function openHelp(topic){
 const TOUR = [
     { i:'⌂', t:'Ti do il benvenuto in Casa Hub', b:'Impegni di casa, energie, riordino, stanze e spesa in un posto solo. In un minuto ti mostro come funziona. Puoi ritrovare tutto toccando i <b>?</b> nelle schermate.' },
     { i:'✓', t:'Impegni', b:'Con <b>+</b> aggiungi un impegno, con urgenza, data e ripetizione. Tocca il cerchio quando l’hai fatto, oppure tocca il nome per rimandarlo. Se arriva un imprevisto, un tasto sposta tutto a domani.' },
-    { i:'🥄', t:'Le tue energie', b:'Ogni mattina un piccolo check-in stima i tuoi <b>cucchiaini</b>. Ogni impegno ne costa un po’ (anche zero o a quarti). Se la giornata è troppo piena, l’app ti dice cosa spostare.' },
+    { i:'🥄', t:'Le tue energie', spoons:true, b:'Ogni mattina un piccolo check-in stima i tuoi <b>cucchiaini</b>. Ogni impegno ne costa un po’ (anche zero o a quarti). Se la giornata è troppo piena, l’app ti dice cosa spostare.' },
     { i:'◷', t:'Riordino', b:'15 minuti al giorno, una stanza alla volta, con un timer. Niente perfezionismo: quando suona, ti fermi.' },
     { i:'▣', t:'Stanze', b:'Per ogni stanza: la lista delle cose da fare e le foto di com’è e di come la vorresti. Sulle foto puoi <b>scrivere e disegnare</b>, anche con la pennina.' },
+    { i:'❄', t:'Frigo', b:'Segna cosa c’è e quando scade: l’app ti mostra cosa consumare per primo e, se colleghi la sync, ti manda un promemoria ogni mattina. Dopo la spesa ti propone di mettere via i prodotti freschi.' },
     { i:'🛒', t:'Spesa', b:'Spunta quello che serve: la lista si stampa divisa per reparti, diventa un Google Doc o parte su WhatsApp.' },
     { i:'☁', t:'Su più dispositivi', b:'Dal tasto con la nuvoletta in alto colleghi la sincronizzazione con Google: dati e foto restano tuoi, nel tuo Drive. Fatto questo, si comincia!' },
 ];
@@ -2357,6 +2409,8 @@ function renderTour(){
         <div class="tour-icon">${s.i}</div>
         <div class="modal-title" style="text-align:center;">${s.t}</div>
         <p class="tour-text">${s.b}</p>
+        ${s.spoons ? `<label class="check-row tour-toggle"><input type="checkbox" ${spoonsOn() ? 'checked' : ''} onchange="settings().spoons=this.checked;save();_pendingRender=true;">
+            <span>Voglio usare i cucchiaini (si può cambiare quando vuoi dalla rotellina ⚙)</span></label>` : ''}
         <div class="tour-dots">${TOUR.map((_, i) => `<i class="${i === tourIdx ? 'on' : ''}"></i>`).join('')}</div>
         <div class="modal-btns">
             ${tourIdx ? `<button class="btn btn-secondary" onclick="tourIdx--;renderTour()">Indietro</button>` : ''}
@@ -2459,13 +2513,13 @@ function renderTidy(app){
         ${timerHtml}
         ${recent.length ? `<div class="block card"><div class="block-title"><span>Ultime volte</span></div>
             ${recent.map(x => `<div class="e-row static"><span class="e-name">${escHtml((getRoom(x.roomId) || {}).name || x.roomName || 'Stanza')}<span class="e-days">${escHtml(relDays(x.date))}, ${x.minutes} min</span></span>
-                <span class="m-spoon">🥄${fmtSp(x.cost)}</span><button class="shop-edit" onclick="deleteTidy(${jsArg(x.id)})" aria-label="Elimina">✕</button></div>`).join('')}</div>` : ''}
+                ${spoonsOn() ? `<span class="m-spoon">🥄${fmtSp(x.cost)}</span>` : ''}<button class="shop-edit" onclick="deleteTidy(${jsArg(x.id)})" aria-label="Elimina">✕</button></div>`).join('')}</div>` : ''}
         <div class="block card"><div class="block-title"><span>Impostazioni</span></div>
             <div class="set-row"><div><div class="set-name">Durata</div></div>
                 <div class="chip-row" style="margin:0;">${[10, 15, 20, 30].map(n => `<button class="chip${st.tidyMin === n ? ' on' : ''}" onclick="setTidyMin(${n})">${n}′</button>`).join('')}</div></div>
-            <div class="set-row"><div><div class="set-name">Cucchiaini</div><div class="set-desc">Quanto ti costa un giro completo</div></div>
+            <div class="set-row${spoonsOn() ? '' : ' hidden'}"><div><div class="set-name">Cucchiaini</div><div class="set-desc">Quanto ti costa un giro completo</div></div>
                 <div class="sp-stepper on"><button onclick="stepTidyCost(-1)" aria-label="Meno">−</button><span>🥄 ${fmtSp(st.tidyCost)}</span><button onclick="stepTidyCost(1)" aria-label="Più">+</button></div></div>
-            <label class="check-row set-check"><input type="checkbox" ${st.tidyDaily ? 'checked' : ''} onchange="settings().tidyDaily=this.checked;save();">
+            <label class="check-row set-check${spoonsOn() ? '' : ' hidden'}"><input type="checkbox" ${st.tidyDaily ? 'checked' : ''} onchange="settings().tidyDaily=this.checked;save();">
                 <span><b>Mettilo in programma ogni giorno</b>: finché non lo fai conta tra le energie previste</span></label>
             <button class="btn btn-secondary" onclick="openRoomsModal()">Gestisci stanze</button>
         </div>`;
@@ -2562,6 +2616,356 @@ function resumeTimerState(){
     if (!ui.timer || !ui.timer.endAt) return;
     if (timerLeft() <= 0) finishTidy(true, true); // eri altrove: niente suono, solo il salvataggio
     else { startTick(); keepAwake(true); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FRIGO (inventario con scadenze)
+// ═══════════════════════════════════════════════════════════════════════════
+// Durate tipiche in giorni, usate solo se non c'è ancora uno storico per quel prodotto
+const COMMON_SHELF = { latte:7, yogurt:14, mozzarella:5, burrata:3, ricotta:5, stracchino:6, panna:7, burro:30, uova:21,
+    parmigiano:30, formaggio:14, prosciutto:5, affettati:5, mortadella:5, salame:20, pollo:2, tacchino:2, macinata:2,
+    carne:3, pesce:2, salmone:2, insalata:4, rucola:3, spinaci:4, fragole:3, frutti:3, banane:5, pomodori:6, zucchine:7,
+    funghi:4, pane:3, sugo:5, pesto:7, hummus:5, tofu:7, succo:7, avanzi:3 };
+const OPEN_CHIPS = [1, 2, 3, 5, 7, 14];
+function fridgeExpiry(x){
+    let e = x.expiry;
+    if (x.openedAt && x.openDays) { const o = shiftDate(x.openedAt, x.openDays); if (!e || o < e) e = o; }
+    return e;
+}
+function daysToExpiry(x){ const e = fridgeExpiry(x); return e ? daysBetween(todayStr(), e) : null; }
+function expLevel(d){ return d === null ? 'none' : d < 0 ? 'gone' : d <= 1 ? 'soon' : d <= 3 ? 'near' : 'ok'; }
+function expText(d){
+    if (d === null) return 'senza scadenza';
+    if (d < -1) return `scaduto da ${-d} giorni`;
+    if (d === -1) return 'scaduto ieri';
+    if (d === 0) return 'scade oggi';
+    if (d === 1) return 'scade domani';
+    return `scade tra ${d} giorni`;
+}
+// Quanto dura di solito: prima lo storico (mediana delle ultime 3 volte), poi la tabella
+function typicalShelf(name){
+    const n = normName(name);
+    if (!n) return null;
+    const past = data.fridgeLog.filter(l => normName(l.name) === n && l.days !== null)
+        .sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3).map(l => l.days).sort((a, b) => a - b);
+    if (past.length) return { days:past[Math.floor(past.length / 2)], from:'storico' };
+    const key = Object.keys(COMMON_SHELF).find(k => n.includes(k));
+    return key ? { days:COMMON_SHELF[key], from:'tipico' } : null;
+}
+function zoneForShopCat(catId){
+    if (/surgelati/.test(catId || '')) return 'freezer';
+    if (/dispensa|pane|bevande|pulizia|igiene/.test(catId || '')) return 'pantry';
+    return 'fridge';
+}
+function freshShopCat(catId){ return /frutta|latticini|carne|surgelati/.test(catId || ''); }
+function fridgeSoon(){
+    return data.fridge.map(x => ({ x, d:daysToExpiry(x) })).filter(o => o.d !== null && o.d <= Math.max(1, settings().fridgeDays))
+        .sort((a, b) => a.d - b.d);
+}
+// Scheda in "Oggi": cosa consumare per primo
+function fridgeTodayHtml(){
+    const soon = fridgeSoon();
+    if (!soon.length) return '';
+    return `<div class="fridge-alert" onclick="setSection('fridge')">
+        <div class="fa-title">Da consumare presto</div>
+        <div class="fa-list">${soon.slice(0, 5).map(o => `<span class="fa-item lvl-${expLevel(o.d)}">${escHtml(o.x.name)} · ${escHtml(expText(o.d).replace('scade ', ''))}</span>`).join('')}
+            ${soon.length > 5 ? `<span class="fa-item">+${soon.length - 5}</span>` : ''}</div></div>`;
+}
+
+let fz = { zone:'fridge', expiry:null, chip:null };
+function renderFridge(app){
+    const zf = ui.fridgeZone || 'all';
+    const items = data.fridge.filter(x => zf === 'all' || x.zone === zf).map(x => ({ x, d:daysToExpiry(x) }));
+    const groups = [
+        ['gone', 'Scaduti'], ['soon', 'Oggi e domani'], ['near', 'Entro 3 giorni'], ['ok', 'Più avanti'], ['none', 'Senza scadenza'] ];
+    const month = todayStr().slice(0, 7);
+    const logM = data.fridgeLog.filter(l => l.date.slice(0, 7) === month);
+    const eaten = logM.filter(l => l.outcome === 'eaten').length, wasted = logM.filter(l => l.outcome === 'wasted');
+    const st = settings();
+    app.innerHTML = `
+        <div class="sec-head"><div><div class="sec-title">Frigo ${helpBtn('fridge')}</div><div class="sec-sub">Cosa c’è e cosa scade per primo</div></div>
+            <button class="add-btn" onclick="openSettings('fridge')">${st.fridgeRemind ? '🔔 Attivi' : '🔔 Promemoria'}</button></div>
+        <div class="card fridge-add">
+            <input type="text" id="fzName" list="fzNames" placeholder="Cosa metti dentro? (es. yogurt)" maxlength="60" autocomplete="off"
+                oninput="fridgeNameInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();addFridgeItem();}">
+            <datalist id="fzNames">${fridgeNameSuggestions().map(n => `<option value="${escHtml(n)}">`).join('')}</datalist>
+            <div class="fz-row">
+                <input type="text" id="fzQty" placeholder="Quantità (facoltativa)" maxlength="30">
+                <div class="seg">${Object.entries(FRIDGE_ZONES).map(([k, v]) => `<button class="${fz.zone === k ? 'on' : ''}" onclick="fz.zone='${k}';renderFridgeChips()">${v}</button>`).join('')}</div>
+            </div>
+            <div class="field-label" style="margin-top:10px;">Scade</div>
+            <div class="chip-row" id="fzChips"></div>
+            <input type="date" id="fzDate" class="hidden" onchange="fz.expiry=this.value||null;fz.chip='date';renderFridgeChips()">
+            <button class="btn btn-primary" onclick="addFridgeItem()">Aggiungi</button>
+        </div>
+        <div class="shop-toolbar"><div class="seg">
+            ${[['all', 'Tutto'], ...Object.entries(FRIDGE_ZONES)].map(([k, v]) => `<button class="${zf === k ? 'on' : ''}" onclick="ui.fridgeZone='${k}';saveUi();render()">${v}</button>`).join('')}
+        </div></div>
+        ${items.length ? groups.map(([lvl, title]) => {
+            const g = items.filter(o => expLevel(o.d) === lvl).sort((a, b) => (a.d ?? 9999) - (b.d ?? 9999) || a.x.name.localeCompare(b.x.name, 'it'));
+            if (!g.length) return '';
+            return `<div class="block"><div class="block-title${lvl === 'gone' ? ' late' : ''}"><span>${title}</span><span class="count">${g.length}</span></div>
+                ${g.map(o => fridgeRowHtml(o.x, o.d, zf === 'all')).join('')}</div>`;
+        }).join('') : `<div class="empty-note">${zf === 'all' ? 'Vuoto. Aggiungi qui sopra quello che hai, soprattutto le cose che scadono presto. Dopo “Spesa fatta” te lo propongo io.' : 'Niente qui.'}</div>`}
+        ${logM.length ? `<div class="block card"><div class="block-title"><span>Questo mese</span></div>
+            <div class="e-summary">${eaten} ${eaten === 1 ? 'prodotto consumato' : 'prodotti consumati'}, ${wasted.length} ${wasted.length === 1 ? 'buttato' : 'buttati'}.${wasted.length ? ` Buttati: ${escHtml([...new Set(wasted.map(l => l.name))].slice(0, 6).join(', '))}.` : ' Ottimo, niente sprechi.'}</div></div>` : ''}`;
+    renderFridgeChips();
+}
+function fridgeRowHtml(x, d, showZone){
+    const a = jsArg(x.id), lvl = expLevel(d);
+    const extra = [];
+    if (x.qty) extra.push(escHtml(x.qty));
+    if (showZone && x.zone !== 'fridge') extra.push(FRIDGE_ZONES[x.zone]);
+    if (x.openedAt) extra.push(`aperto ${escHtml(fmtRel(x.openedAt))}`);
+    return `<div class="fz-item lvl-${lvl}" onclick="openFridgeItem(${a})">
+        <span class="fz-dot"></span>
+        <div class="fz-body"><div class="fz-name">${escHtml(x.name)}</div>
+            <div class="task-meta"><span class="fz-exp">${escHtml(expText(d))}</span>${extra.map(e => `<span>${e}</span>`).join('')}</div></div>
+        <button class="fz-done" onclick="event.stopPropagation();finishFridge(${a},'eaten')" aria-label="Consumato" title="Consumato">✓</button>
+    </div>`;
+}
+function fridgeNameSuggestions(){
+    const set = new Set();
+    data.fridgeLog.slice(-80).forEach(l => set.add(l.name));
+    data.shopItems.filter(i => freshShopCat(i.catId)).forEach(i => set.add(i.name));
+    return [...set].sort((a, b) => a.localeCompare(b, 'it'));
+}
+function fridgeNameInput(){
+    const typ = typicalShelf($('fzName').value);
+    if (fz.chip === 'auto' || fz.chip === null) { fz.expiry = typ ? shiftDate(todayStr(), typ.days) : null; fz.chip = typ ? 'auto' : null; }
+    renderFridgeChips();
+}
+function renderFridgeChips(){
+    const box = $('fzChips');
+    if (!box) return;
+    document.querySelectorAll('.fridge-add .seg button').forEach((b, i) => b.classList.toggle('on', Object.keys(FRIDGE_ZONES)[i] === fz.zone));
+    const typ = typicalShelf($('fzName') ? $('fzName').value : '');
+    const today = todayStr();
+    const chips = [];
+    if (typ) chips.push(['auto', `${typ.from === 'storico' ? 'Come l’altra volta' : 'Di solito'} · ${typ.days} gg`, shiftDate(today, typ.days)]);
+    [[1, 'Domani'], [3, '3 giorni'], [7, '1 settimana'], [30, '1 mese']].forEach(([n, l]) => chips.push(['d' + n, l, shiftDate(today, n)]));
+    box.innerHTML = chips.map(([k, l, v]) => `<button type="button" class="chip${fz.chip === k ? ' on' : ''}" onclick="fz.chip='${k}';fz.expiry='${v}';renderFridgeChips()">${l}</button>`).join('')
+        + `<button type="button" class="chip${fz.chip === 'date' ? ' on' : ''}" onclick="const i=$('fzDate');i.classList.remove('hidden');i.showPicker&&i.showPicker();">${fz.chip === 'date' && fz.expiry ? escHtml(fmtDate(fz.expiry)) : 'Data…'}</button>`
+        + `<button type="button" class="chip${fz.chip === 'none' ? ' on' : ''}" onclick="fz.chip='none';fz.expiry=null;renderFridgeChips()">Nessuna</button>`;
+}
+function addFridgeItem(){
+    const inp = $('fzName'), name = inp ? inp.value.trim() : '';
+    if (!name) { if (inp) inp.focus(); return; }
+    const nice = name.charAt(0).toUpperCase() + name.slice(1);
+    data.fridge.push({ id:uid(), name:nice, qty:$('fzQty').value.trim(), zone:fz.zone, expiry:fz.expiry, openedAt:null, openDays:null, added:todayStr() });
+    save();
+    const exp = fz.expiry;
+    fz = { zone:fz.zone, expiry:null, chip:null };
+    render();
+    showToast(`${nice} aggiunto${exp ? `: ${expText(daysBetween(todayStr(), exp))}` : ''}`);
+    const again = $('fzName'); if (again) again.focus();
+}
+let editingFridgeId = null;
+function openFridgeItem(id){
+    const x = data.fridge.find(i => i.id === id);
+    if (!x) return;
+    editingFridgeId = id;
+    const d = daysToExpiry(x), a = jsArg(id);
+    $('fridgeBody').innerHTML = `
+        <div class="modal-title">${escHtml(x.name)}</div>
+        <div class="fz-status lvl-${expLevel(d)}">${escHtml(expText(d))}${x.openedAt && x.openDays ? ` · aperto ${escHtml(fmtRel(x.openedAt))}, si conserva ${x.openDays} giorni` : ''}</div>
+        <input type="text" id="fiName" value="${escHtml(x.name)}" maxlength="60" aria-label="Nome">
+        <div class="field-row">
+            <input type="text" id="fiQty" value="${escHtml(x.qty)}" placeholder="Quantità" maxlength="30" aria-label="Quantità">
+            <select class="styled-select" id="fiZone" aria-label="Zona">${Object.entries(FRIDGE_ZONES).map(([k, v]) => `<option value="${k}"${x.zone === k ? ' selected' : ''}>${v}</option>`).join('')}</select>
+        </div>
+        <div class="field-label">Scadenza sulla confezione</div>
+        <input type="date" id="fiDate" value="${x.expiry || ''}">
+        <div class="field-label">${x.openedAt ? 'Aperto: dura ancora…' : 'L’hai aperto?'}</div>
+        <div class="chip-row">${OPEN_CHIPS.map(n => `<button type="button" class="chip${x.openedAt && x.openDays === n ? ' on' : ''}" onclick="setOpened(${a},${n})">${n} ${n === 1 ? 'giorno' : 'giorni'}</button>`).join('')}
+            ${x.openedAt ? `<button type="button" class="chip" onclick="setOpened(${a},0)">Non aperto</button>` : ''}</div>
+        <div class="e-hint" style="margin-top:0;">${x.openedAt ? `Aperto il ${escHtml(fmtDate(x.openedAt))}. ` : ''}Dopo l’apertura molti prodotti durano pochi giorni: la scadenza si accorcia da sola.</div>
+        <label class="check-row" style="margin-top:10px;"><input type="checkbox" id="fiToShop"> Finito: rimettilo nella lista della spesa</label>
+        <div class="modal-btns">
+            <button class="btn btn-primary" onclick="finishFridge(${a},'eaten')">✓ Consumato</button>
+            <button class="btn btn-secondary" onclick="finishFridge(${a},'wasted')">Buttato</button>
+        </div>
+        <div class="modal-btns">
+            <button class="btn btn-secondary" onclick="saveFridgeItem()">Salva modifiche</button>
+            <button class="btn btn-secondary" onclick="closeModal('modalFridge')">Chiudi</button>
+        </div>
+        <button class="link-btn danger" style="margin-top:10px;" onclick="deleteFridgeItem(${a})">Elimina (inserito per sbaglio)</button>`;
+    openModal('modalFridge');
+}
+function readFridgeForm(x){
+    const name = $('fiName').value.trim();
+    if (name) x.name = name;
+    x.qty = $('fiQty').value.trim();
+    x.zone = $('fiZone').value;
+    x.expiry = isIso($('fiDate').value) ? $('fiDate').value : null;
+}
+function saveFridgeItem(){
+    const x = data.fridge.find(i => i.id === editingFridgeId);
+    if (!x) { closeModal('modalFridge'); return; }
+    readFridgeForm(x);
+    save(); closeModal('modalFridge'); render();
+}
+function setOpened(id, n){
+    const x = data.fridge.find(i => i.id === id);
+    if (!x) return;
+    readFridgeForm(x);
+    if (n) { x.openedAt = x.openedAt || todayStr(); x.openDays = n; }
+    else { x.openedAt = null; x.openDays = null; }
+    save(); render(); openFridgeItem(id);
+}
+function finishFridge(id, outcome){
+    const x = data.fridge.find(i => i.id === id);
+    if (!x) return;
+    const toShop = $('fiToShop') && editingFridgeId === id && $('fiToShop').checked;
+    if (editingFridgeId === id && $('fiName')) readFridgeForm(x);
+    const before = JSON.parse(JSON.stringify(x));
+    const today = todayStr();
+    const exp = x.expiry || fridgeExpiry(x);
+    const log = { id:uid(), name:x.name, zone:x.zone, added:x.added, date:today, outcome,
+        days:exp && x.added ? Math.max(0, daysBetween(x.added, exp)) : null };
+    data.fridge = data.fridge.filter(i => i.id !== id);
+    data.fridgeLog.push(log);
+    // lo storico serve per le durate tipiche: bastano gli ultimi 300 movimenti
+    if (data.fridgeLog.length > 300) data.fridgeLog = data.fridgeLog.slice(-300);
+    let shopMsg = '';
+    if (toShop) shopMsg = addNameToShopping(x.name) ? ' e rimesso in lista' : '';
+    save(); closeModal('modalFridge'); render();
+    showToast(`${outcome === 'eaten' ? '✓ Consumato' : 'Buttato'}: ${x.name}${shopMsg}`, { label:'Annulla', fn:() => {
+        data.fridgeLog = data.fridgeLog.filter(l => l.id !== log.id);
+        data.fridge.push(before); save(); render();
+    } });
+}
+function deleteFridgeItem(id){
+    data.fridge = data.fridge.filter(i => i.id !== id);
+    save(); closeModal('modalFridge'); render();
+}
+// Ritorna true se il prodotto è stato segnato "da comprare"
+function addNameToShopping(name){
+    const n = normName(name);
+    let it = data.shopItems.find(i => normName(i.name) === n);
+    if (!it) {
+        const cat = sortedShopCats()[0];
+        it = { id:uid(), catId:cat ? cat.id : null, name, need:false, qty:'' };
+        data.shopItems.push(it);
+    }
+    it.need = true;
+    return true;
+}
+
+// ── Dalla spesa al frigo ────────────────────────────────────────────────────
+let toFridge = [];
+function openToFridge(bought){
+    toFridge = bought.map(i => {
+        const typ = typicalShelf(i.name);
+        return { name:i.name, qty:i.qty || '', zone:zoneForShopCat(i.catId), on:freshShopCat(i.catId), days:typ ? typ.days : (freshShopCat(i.catId) ? 5 : 0) };
+    });
+    if (!toFridge.length) return;
+    renderToFridge();
+    openModal('modalToFridge');
+}
+function renderToFridge(){
+    const opts = [0, 2, 3, 5, 7, 10, 14, 30, 90];
+    $('toFridgeBody').innerHTML = `
+        <div class="modal-title">Metti via la spesa?</div>
+        <p class="confirm-msg">Spunta quello che vuoi tenere d’occhio nel frigo e scegli tra quanto scade. Le cose fresche sono già spuntate.</p>
+        <div class="tf-list">${toFridge.map((r, i) => `<div class="tf-row${r.on ? ' on' : ''}">
+            <button class="shop-box" onclick="toFridge[${i}].on=!toFridge[${i}].on;renderToFridge()" aria-label="Includi ${escHtml(r.name)}"></button>
+            <span class="tf-name" onclick="toFridge[${i}].on=!toFridge[${i}].on;renderToFridge()">${escHtml(r.name)}<small>${FRIDGE_ZONES[r.zone]}</small></span>
+            <select class="mg-cost" onchange="toFridge[${i}].days=+this.value;toFridge[${i}].on=true;renderToFridge()" aria-label="Scadenza">
+                ${opts.map(n => `<option value="${n}"${r.days === n ? ' selected' : ''}>${n ? (n < 30 ? n + ' gg' : n === 30 ? '1 mese' : '3 mesi') : 'nessuna'}</option>`).join('')}
+            </select></div>`).join('')}</div>
+        <div class="modal-btns">
+            <button class="btn btn-primary" onclick="saveToFridge()">Aggiungi (${toFridge.filter(r => r.on).length})</button>
+            <button class="btn btn-secondary" onclick="closeModal('modalToFridge')">No, grazie</button>
+        </div>`;
+}
+function saveToFridge(){
+    const today = todayStr();
+    const sel = toFridge.filter(r => r.on);
+    sel.forEach(r => data.fridge.push({ id:uid(), name:r.name, qty:r.qty, zone:r.zone, expiry:r.days ? shiftDate(today, r.days) : null, openedAt:null, openDays:null, added:today }));
+    save(); closeModal('modalToFridge'); render();
+    if (sel.length) showToast(`${sel.length} ${sel.length === 1 ? 'prodotto' : 'prodotti'} nel frigo`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  IMPOSTAZIONI (cucchiaini, promemoria scadenze, guida, sync)
+// ═══════════════════════════════════════════════════════════════════════════
+function openSettings(focus){
+    renderSettings();
+    openModal('modalSettings');
+    if (focus === 'fridge') setTimeout(() => { const el = $('setFridge'); if (el) el.scrollIntoView({ block:'start', behavior:'smooth' }); }, 60);
+}
+function renderSettings(){
+    const st = settings();
+    const hours = [6, 7, 8, 9, 10, 12, 18, 20];
+    $('settingsBody').innerHTML = `
+        <div class="modal-title">Impostazioni</div>
+        <div class="set-block">
+            <label class="check-row set-check" style="border:none;padding-top:0;"><input type="checkbox" ${st.spoons ? 'checked' : ''} onchange="setSpoons(this.checked)">
+                <span><b>Teoria dei cucchiaini</b><br>Check-in del mattino, costo degli impegni, consigli quando sfori. Se la spegni, i dati restano: riaccendendola ritrovi tutto.</span></label>
+        </div>
+        <div class="set-block" id="setFridge">
+            <div class="set-name">Promemoria scadenze ${helpBtn('remind')}</div>
+            <p class="e-hint" style="margin-top:4px;">Ogni giorno all’ora scelta lo script Google controlla il frigo e, se qualcosa sta per scadere, ti avvisa con una notifica del Calendario (o un’email), anche ad app chiusa.</p>
+            ${syncUrl ? '' : `<div class="sheet-info">Serve la sync con Google collegata.</div>`}
+            <div class="field-label">Avvisami</div>
+            <div class="chip-row">${[[0, 'Il giorno stesso'], [1, '1 giorno prima'], [2, '2 giorni prima'], [3, '3 giorni prima']].map(([n, l]) => `<button class="chip${st.fridgeDays === n ? ' on' : ''}" onclick="settings().fridgeDays=${n};save();renderSettings()">${l}</button>`).join('')}</div>
+            <div class="field-label">Alle</div>
+            <div class="chip-row">${hours.map(h => `<button class="chip${st.fridgeHour === h ? ' on' : ''}" onclick="settings().fridgeHour=${h};save();settings().fridgeRemind?setRemind(true):renderSettings()">${h}:00</button>`).join('')}</div>
+            <div class="field-label">Come</div>
+            <div class="chip-row">${[['calendar', 'Notifica Calendario'], ['email', 'Email'], ['both', 'Entrambi']].map(([k, l]) => `<button class="chip${st.fridgeChannel === k ? ' on' : ''}" onclick="settings().fridgeChannel='${k}';save();renderSettings()">${l}</button>`).join('')}</div>
+            <div class="remind-state ${st.fridgeRemind ? 'on' : ''}">${st.fridgeRemind ? `Attivi: ogni giorno verso le ${st.fridgeHour}` : 'Non attivi'}</div>
+            <div class="modal-btns">
+                <button class="btn btn-primary" onclick="setRemind(true)" ${syncUrl ? '' : 'disabled'}>${st.fridgeRemind ? 'Aggiorna' : 'Attiva'}</button>
+                ${st.fridgeRemind ? `<button class="btn btn-secondary" onclick="setRemind(false)">Disattiva</button>` : ''}
+            </div>
+            <button class="btn btn-secondary" onclick="testRemind()" ${syncUrl ? '' : 'disabled'}>Manda una prova adesso</button>
+        </div>
+        <div class="set-block">
+            <button class="btn btn-secondary" style="margin-top:0;" onclick="closeModal('modalSettings');openTour()">Rivedi la guida</button>
+            <button class="btn btn-secondary" onclick="closeModal('modalSettings');openSyncModal()">Sync e backup</button>
+        </div>
+        <button class="btn btn-secondary" onclick="closeModal('modalSettings')">Chiudi</button>`;
+}
+function setSpoons(on){
+    settings().spoons = !!on;
+    save(); _pendingRender = true; renderSettings();
+    showToast(on ? 'Cucchiaini attivi' : 'Cucchiaini spenti: i dati restano');
+}
+async function remindCall(action, body){
+    const res = await fetch(`${syncUrl}?action=${action}`, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' }, body:JSON.stringify(body) });
+    let j = null;
+    try { j = await res.json(); } catch (_) {}
+    if (!j || !j.ok) {
+        const err = (j && j.error) || '';
+        if (!j || /dati non validi|unknown/i.test(err)) throw new Error('aggiorna lo script Google (Sync → Script Google)');
+        if (/autorizz|authoriz|permission|permess/i.test(err)) throw new Error('nello script esegui una volta “autorizza” (vedi istruzioni)');
+        throw new Error(err || 'errore');
+    }
+    return j;
+}
+async function setRemind(on){
+    if (!syncUrl) return;
+    const st = settings();
+    try {
+        showToast(on ? 'Attivo i promemoria…' : 'Disattivo…');
+        await doSync(true); // lo script legge le impostazioni e il frigo dal foglio
+        const j = await remindCall('remind', { kind:'remind', on, hour:st.fridgeHour });
+        st.fridgeRemind = !!on; save();
+        doSync(true);
+        renderSettings();
+        showToast(on ? `🔔 Attivi, ogni giorno verso le ${st.fridgeHour}${j.tz && j.tz !== 'Europe/Rome' ? ` (fuso dello script: ${j.tz})` : ''}` : 'Promemoria disattivati');
+    } catch (e) { showToast('⚠ ' + e.message); }
+}
+async function testRemind(){
+    if (!syncUrl) return;
+    try {
+        showToast('Mando la prova…');
+        await doSync(true);
+        const j = await remindCall('remindtest', { kind:'remindtest' });
+        const ch = settings().fridgeChannel;
+        showToast(`✓ Inviata: ${ch === 'email' ? 'controlla la posta' : 'la notifica arriva tra circa 5 minuti'}${typeof j.sent === 'number' && j.sent ? ` (${j.sent} in scadenza)` : ''}`);
+    } catch (e) { showToast('⚠ ' + e.message); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2700,8 +3104,10 @@ function clearShopping(){
     if (!n) { showToast('Non c\'è niente da azzerare'); return; }
     confirmDialog({ title:'Spesa fatta?', msg:`Tolgo la spunta e la quantità da ${n} ${n === 1 ? 'prodotto' : 'prodotti'}. Il catalogo resta com'è.`, ok:'Azzera', danger:false }, () => {
         const before = data.shopItems.filter(i => i.need).map(i => ({ id:i.id, qty:i.qty }));
+        const bought = data.shopItems.filter(i => i.need).map(i => ({ name:i.name, qty:i.qty, catId:i.catId }));
         data.shopItems.forEach(i => { if (i.need) { i.need = false; i.qty = ''; } });
         save(); render();
+        setTimeout(() => openToFridge(bought), 250);
         showToast('Lista azzerata', { label:'Annulla', fn:() => {
             before.forEach(b => { const it = data.shopItems.find(i => i.id === b.id); if (it) { it.need = true; it.qty = b.qty; } });
             save(); render();
@@ -2895,7 +3301,8 @@ function shareDocLink(){
 // ═══════════════════════════════════════════════════════════════════════════
 //  SYNC, BACKUP, SCRIPT
 // ═══════════════════════════════════════════════════════════════════════════
-const APPS_SCRIPT_CODE = `// Casa Hub — Apps Script v2 (sync + liste della spesa in Google Docs + foto delle stanze)
+const APPS_SCRIPT_CODE = `// Casa Hub — Apps Script v3 (sync + liste della spesa in Google Docs + foto delle stanze + promemoria scadenze)
+// Dopo averlo incollato: scegli la funzione "autorizza" in alto e premi Esegui una volta.
 // Crealo da un Foglio Google tutto suo: Estensioni → Apps Script.
 const SHEET_NAME = 'CasaHub';
 const CHUNK = 45000;
@@ -2904,15 +3311,7 @@ const KEEP_DAYS = 60; // le liste più vecchie finiscono nel cestino
 const PHOTO_FOLDER = 'Casa Hub - Foto';
 
 function doGet(e) {
-  if (e && e.parameter && e.parameter.action === 'read') {
-    const sheet = getSheet();
-    const last = sheet.getLastRow();
-    if (last < 1) return out('{}');
-    const txt = sheet.getRange(1, 1, last, 1).getValues()
-      .map(function (r) { const v = String(r[0]); return v.charAt(0) === '~' ? v.slice(1) : v; })
-      .join('');
-    return out(txt || '{}');
-  }
+  if (e && e.parameter && e.parameter.action === 'read') return out(readDataText());
   if (e && e.parameter && e.parameter.action === 'imgget') return getImage(e.parameter.id);
   return out(JSON.stringify({ error: 'unknown action' }));
 }
@@ -2921,6 +3320,8 @@ function doPost(e) {
   if (e && e.parameter && e.parameter.action === 'doc') return createShoppingDoc(e);
   if (e && e.parameter && e.parameter.action === 'imgput') return putImage(e);
   if (e && e.parameter && e.parameter.action === 'imgdel') return deleteImage(e);
+  if (e && e.parameter && e.parameter.action === 'remind') return setReminder(e);
+  if (e && e.parameter && e.parameter.action === 'remindtest') return testReminder();
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
@@ -3033,6 +3434,15 @@ function deleteImage(e) {
   }
 }
 
+function readDataText() {
+  const sheet = getSheet();
+  const last = sheet.getLastRow();
+  if (last < 1) return '{}';
+  return sheet.getRange(1, 1, last, 1).getValues()
+    .map(function (r) { const v = String(r[0]); return v.charAt(0) === '~' ? v.slice(1) : v; })
+    .join('') || '{}';
+}
+
 function getSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   return ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);
@@ -3040,6 +3450,91 @@ function getSheet() {
 
 function out(s) {
   return ContentService.createTextOutput(s).setMimeType(ContentService.MimeType.JSON);
+}
+
+// ── Promemoria delle scadenze del frigo ─────────────────────────────────────
+const REMIND_CAL = 'Casa Hub';
+
+// Da eseguire UNA volta dall'editor (scegli "autorizza" in alto e premi Esegui):
+// concede i permessi per Calendario, email e promemoria automatici.
+function autorizza() {
+  CalendarApp.getDefaultCalendar();
+  ScriptApp.getProjectTriggers();
+  MailApp.getRemainingDailyQuota();
+  return 'ok';
+}
+
+function setReminder(e) {
+  try {
+    const p = JSON.parse(e.postData.contents);
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      if (t.getHandlerFunction() === 'dailyFridgeCheck') ScriptApp.deleteTrigger(t);
+    });
+    if (p.on) {
+      const h = Math.max(0, Math.min(23, Number(p.hour) || 8));
+      ScriptApp.newTrigger('dailyFridgeCheck').timeBased().everyDays(1).atHour(h).create();
+    }
+    return out(JSON.stringify({ ok: true, on: !!p.on, tz: Session.getScriptTimeZone() }));
+  } catch (err) {
+    return out(JSON.stringify({ error: String(err && err.message || err) }));
+  }
+}
+
+function testReminder() {
+  try { return out(JSON.stringify({ ok: true, sent: dailyFridgeCheck(true) })); }
+  catch (err) { return out(JSON.stringify({ error: String(err && err.message || err) })); }
+}
+
+function isoOf(d) { return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd'); }
+function daysBetweenIso(a, b) { return Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 864e5); }
+function fridgeExpiry(x) {
+  let e = x.expiry || null;
+  if (x.openedAt && x.openDays) {
+    const d = new Date(x.openedAt + 'T12:00:00');
+    d.setDate(d.getDate() + Number(x.openDays));
+    const o = isoOf(d);
+    if (!e || o < e) e = o;
+  }
+  return e;
+}
+
+// Gira ogni giorno all'ora scelta. force = prova manuale dall'app.
+function dailyFridgeCheck(force) {
+  force = force === true;
+  const data = JSON.parse(readDataText());
+  const st = (data.settings || [])[0] || {};
+  if (!st.fridgeRemind && !force) return 0;
+  const today = isoOf(new Date());
+  const ahead = st.fridgeDays === undefined ? 1 : Number(st.fridgeDays) || 0;
+  const items = (data.fridge || []).map(function (x) {
+    const e = fridgeExpiry(x);
+    return e ? { name: x.name, d: daysBetweenIso(today, e) } : null;
+  }).filter(function (x) { return x && x.d <= ahead; })
+    .sort(function (a, b) { return a.d - b.d; });
+  if (!items.length && !force) return 0;
+  const label = function (x) {
+    return x.name + ' (' + (x.d < 0 ? 'scaduto' : x.d === 0 ? 'oggi' : x.d === 1 ? 'domani' : 'tra ' + x.d + ' giorni') + ')';
+  };
+  const title = items.length
+    ? 'Da consumare: ' + items.slice(0, 4).map(label).join(', ') + (items.length > 4 ? ' e altro' : '')
+    : 'Prova promemoria Casa Hub: niente in scadenza';
+  const body = items.length ? items.map(function (x) { return '- ' + label(x); }).join('\\n') : 'Le notifiche funzionano.';
+  const ch = st.fridgeChannel || 'calendar';
+  if (ch === 'calendar' || ch === 'both') {
+    const cals = CalendarApp.getCalendarsByName(REMIND_CAL);
+    const cal = cals.length ? cals[0] : CalendarApp.createCalendar(REMIND_CAL);
+    // evento tra 15 minuti con avviso 10 minuti prima: la notifica arriva dopo circa 5 minuti
+    const start = new Date(Date.now() + 15 * 60000);
+    const ev = cal.createEvent(title, start, new Date(start.getTime() + 15 * 60000), { description: body });
+    ev.removeAllReminders();
+    ev.addPopupReminder(10);
+    cal.getEvents(new Date(Date.now() - 90 * 864e5), new Date(Date.now() - 14 * 864e5))
+      .forEach(function (x) { x.deleteEvent(); });
+  }
+  if (ch === 'email' || ch === 'both') {
+    MailApp.sendEmail(Session.getEffectiveUser().getEmail(), 'Casa Hub - ' + title, body + '\\n\\nCasa Hub');
+  }
+  return items.length;
 }`;
 
 let syncUrl = localStorage.getItem(SYNC_KEY) || '', syncInProgress = false, lastSyncAt = 0, _autoSyncTimer = null;

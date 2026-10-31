@@ -15,8 +15,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,400..700,100&family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=1.4">
-    <script src="app.js?v=1.4" defer></script>
+    <link rel="stylesheet" href="style.css?v=1.5">
+    <script src="app.js?v=1.5" defer></script>
 </head>
 <body>
 <div id="toast" role="status" aria-live="polite"></div>
@@ -24,6 +24,7 @@
 <header class="topbar">
     <div class="brand">Casa Hub</div>
     <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Tema">☾</button>
+    <button class="theme-btn gear-btn" onclick="openSettings()" title="Impostazioni" aria-label="Impostazioni">⚙</button>
     <button class="sync-btn" id="syncBtn" onclick="openSyncModal()" title="Sincronizzazione e backup">
         <span id="syncDot" class="sync-status-dot"></span><span class="sync-ico" aria-hidden="true">☁</span><span id="syncLabel">Sync</span>
     </button>
@@ -43,6 +44,9 @@
     <button class="nav-item" id="nav_rooms" onclick="setSection('rooms')">
         <svg viewBox="0 0 24 24"><path d="M3.5 11L12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5h4v5"/></svg>
         <span>Stanze</span><i class="nav-badge" id="badgeRooms"></i></button>
+    <button class="nav-item" id="nav_fridge" onclick="setSection('fridge')">
+        <svg viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M6 10h12M9 6v2M9 13v3"/></svg>
+        <span>Frigo</span><i class="nav-badge" id="badgeFridge"></i></button>
     <button class="nav-item" id="nav_shop" onclick="setSection('shop')">
         <svg viewBox="0 0 24 24"><path d="M4 9h16l-1.6 10.2a1.5 1.5 0 0 1-1.5 1.3H7.1a1.5 1.5 0 0 1-1.5-1.3L4 9z"/><path d="M8.5 9l3.5-5 3.5 5"/></svg>
         <span>Spesa</span><i class="nav-badge" id="badgeShop"></i></button>
@@ -59,9 +63,11 @@
     <select class="styled-select" id="tRoom" aria-label="Stanza"></select>
     <div class="field-label">Urgenza</div>
     <div class="triage-box" id="tUrg"></div>
+<div id="tCostWrap">
     <div class="field-label">Cucchiaini</div>
     <div class="chip-row" id="tCost" style="margin-bottom:4px;"></div>
     <div class="hint" id="tCostHint" style="color:var(--text-dim);"></div>
+    </div>
     <div class="field-label">Quando</div>
     <div class="chip-row">
         <button type="button" class="chip" onclick="setTaskDateQuick(0)">Oggi</button>
@@ -130,6 +136,11 @@
     <div id="roomsBody"></div>
     <button class="btn btn-secondary" onclick="closeModal('modalRooms')">Fatto</button>
 </div></div>
+
+<!-- Frigo e impostazioni -->
+<div id="modalFridge" class="modal-overlay hidden"><div class="modal-card" id="fridgeBody"></div></div>
+<div id="modalToFridge" class="modal-overlay hidden"><div class="modal-card" id="toFridgeBody"></div></div>
+<div id="modalSettings" class="modal-overlay hidden"><div class="modal-card" id="settingsBody"></div></div>
 
 <!-- Contenitori dinamici -->
 <div id="modalSheet" class="modal-overlay hidden"><div class="modal-card" id="sheetBody"></div></div>
