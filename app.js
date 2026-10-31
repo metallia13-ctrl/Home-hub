@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  CASA HUB — app.js (v1.2)
+//  CASA HUB — app.js (v1.3)
 //  Impegni di casa (urgenza, categorie, ricorrenze, rinvii), energie con la
 //  teoria dei cucchiaini, lista della spesa
 // ═══════════════════════════════════════════════════════════════════════════
@@ -22,7 +22,8 @@ const MONTHS_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Lugl
 const ISO_DOW_LABELS = { 1:'Lun', 2:'Mar', 3:'Mer', 4:'Gio', 5:'Ven', 6:'Sab', 7:'Dom' };
 const URG_LABEL = { 1:'Normale', 2:'Importante', 3:'Urgente' };
 const REC_UNITS = ['day','week','month','year'];
-const COLLS = ['tasks','taskCats','shopCats','shopItems','days','fixedCosts','settings'];
+const COLLS = ['tasks','taskCats','shopCats','shopItems','days','fixedCosts','settings','rooms','projects','tidy'];
+const SECTIONS = ['tasks','tidy','projects','shop'];
 const VIEWS = ['today','day','week','month','list','energy'];
 const TASK_COST_MAX = 4, OTHER_COST_MAX = 8;
 const DAY_MS = 864e5;
@@ -42,6 +43,15 @@ function slug(s){
 }
 function normName(s){ return String(s || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
 function clamp(n, a, b){ return Math.max(a, Math.min(b, n)); }
+// Cucchiaini a quarti: 0, 0,25, 0,5 … arrotondati per evitare errori di virgola mobile
+function qr(n){ return Math.round((+n || 0) * 4) / 4; }
+function normCost(v, min, max){
+    if (v === null || v === undefined || v === '') return null;
+    const n = +v;
+    return isFinite(n) ? clamp(qr(n), min, max) : null;
+}
+function fmtSp(n){ return String(qr(n)).replace('.', ','); }
+function spWord(n){ return qr(n) === 1 ? 'cucchiaino' : 'cucchiaini'; }
 
 function localDateStr(dt){ return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`; }
 function todayStr(){ return localDateStr(new Date()); }
@@ -102,7 +112,9 @@ const DEFAULT_FIXED = [
     ['pasti', 'Preparare e mangiare i pasti', 1, []],
     ['lezioni', 'Lezioni', 3, [1,2,3,4,5]],
 ];
-function defaultSettings(){ return { id:'main', max:12, reserve:1, debt:true, calib:true, _mod:1 }; }
+function defaultSettings(){ return { id:'main', max:12, reserve:1, debt:true, calib:true, tidyMin:15, tidyCost:1, tidyDaily:true, _mod:1 }; }
+const DEFAULT_ROOMS = ['Cucina','Bagno','Soggiorno','Camera da letto','Ingresso'];
+function defaultRooms(){ return DEFAULT_ROOMS.map((name, i) => ({ id:'d_rm_' + slug(name), name, order:i, _mod:1 })); }
 function defaultFixed(){ return DEFAULT_FIXED.map(([k, name, cost, days]) => ({ id:'d_fx_' + k, name, cost, days:[...days], _mod:1 })); }
 const DEFAULT_SHOP = [
     ['frutta', 'Frutta e verdura', ['Banane','Mele','Pere','Arance','Limoni','Insalata','Pomodori','Zucchine','Carote','Patate','Cipolle','Aglio']],
@@ -115,7 +127,7 @@ const DEFAULT_SHOP = [
     ['pulizia', 'Casa e pulizia', ['Detersivo piatti','Detersivo lavatrice','Carta igienica','Carta da cucina','Sacchi spazzatura','Spugne']],
     ['igiene', 'Igiene personale', ['Shampoo','Bagnoschiuma','Dentifricio','Deodorante']],
 ];
-function emptyData(){ return { v:1, tasks:[], taskCats:[], shopCats:[], shopItems:[], days:[], fixedCosts:[], settings:[], deleted:{}, lastModified:0 }; }
+function emptyData(){ return { v:1, tasks:[], taskCats:[], shopCats:[], shopItems:[], days:[], fixedCosts:[], settings:[], rooms:[], projects:[], tidy:[], deleted:{}, lastModified:0 }; }
 function seedDefaults(d){
     d.taskCats = DEFAULT_TASK_CATS.map(([k, name, subs], i) => ({
         id:'d_tc_' + k, name, color:CAT_COLORS[i % CAT_COLORS.length], order:i,
@@ -126,6 +138,7 @@ function seedDefaults(d){
         id:`d_si_${k}_${slug(n)}`, catId:'d_sc_' + k, name:n, need:false, qty:'', _mod:1 })));
     d.fixedCosts = defaultFixed();
     d.settings = [defaultSettings()];
+    d.rooms = defaultRooms();
     return d;
 }
 
@@ -141,6 +154,7 @@ function normalizeData(d){
     if (!d || typeof d !== 'object') d = {};
     // Dati della v1.0 (senza energie): aggiunge le spese fisse predefinite una volta sola
     const migrateFixed = d.fixedCosts === undefined;
+    const migrateRooms = d.rooms === undefined; // dati precedenti alla v1.3
     for (const k in base) if (d[k] === undefined) d[k] = base[k];
     if (!d.deleted || typeof d.deleted !== 'object') d.deleted = {};
     COLLS.forEach(c => {
@@ -172,7 +186,9 @@ function normalizeData(d){
         t.log = Array.isArray(t.log) ? t.log.filter(isIso).slice(0, 20) : [];
         t.done = !!t.done && !t.rec;
         t.doneAt = isIso(t.doneAt) ? t.doneAt : null;
-        t.cost = (+t.cost >= 1 && +t.cost <= TASK_COST_MAX) ? +t.cost : null; // null = predefinito della categoria
+        t.cost = normCost(t.cost, 0, TASK_COST_MAX); // null = predefinito della categoria; 0 = non costa energie
+        t.projectId = t.projectId ? String(t.projectId) : null;
+        t.order = typeof t.order === 'number' ? t.order : (t.created || 0);
     });
     d.taskCats.forEach((c, i) => {
         c.name = String(c.name || '').trim() || 'Categoria';
@@ -180,12 +196,12 @@ function normalizeData(d){
         const oldIdx = OLD_CAT_COLORS.indexOf(String(c.color).toLowerCase());
         if (oldIdx >= 0) c.color = CAT_COLORS[oldIdx]; // nuova palette, stessa posizione
         if (typeof c.order !== 'number') c.order = i;
-        if (!(+c.cost >= 1 && +c.cost <= TASK_COST_MAX)) c.cost = DEFAULT_CAT_COST[c.id] || 2;
-        else c.cost = +c.cost;
+        const cc = normCost(c.cost, 0, TASK_COST_MAX);
+        c.cost = cc === null ? (DEFAULT_CAT_COST[c.id] || 2) : cc;
         c.subs = Array.isArray(c.subs) ? c.subs.filter(s => s && s.name).map(s => {
             const id = String(s.id || uid());
             let cost = s.cost === undefined ? (DEFAULT_SUB_COST[id] || null) : s.cost;
-            cost = (+cost >= 1 && +cost <= TASK_COST_MAX) ? +cost : null; // null = come la categoria
+            cost = normCost(cost, 0, TASK_COST_MAX); // null = come la categoria
             return { id, name:String(s.name), cost };
         }) : [];
     });
@@ -203,7 +219,7 @@ function normalizeData(d){
     if (migrateFixed && !d.fixedCosts.length) d.fixedCosts = defaultFixed();
     d.fixedCosts.forEach(f => {
         f.name = String(f.name || '').trim() || 'Spesa fissa';
-        f.cost = clamp(parseInt(f.cost, 10) || 1, 1, OTHER_COST_MAX);
+        f.cost = normCost(f.cost, 0.25, OTHER_COST_MAX) ?? 1;
         f.days = Array.isArray(f.days) ? [...new Set(f.days.map(Number).filter(n => n >= 1 && n <= 7))].sort((a, b) => a - b) : [];
     });
     if (!d.settings.some(s => s.id === 'main')) d.settings.push(defaultSettings());
@@ -213,14 +229,35 @@ function normalizeData(d){
     st.reserve = clamp(parseInt(st.reserve, 10) || 0, 0, 10);
     st.debt = st.debt !== false;
     st.calib = st.calib !== false;
+    st.tidyMin = clamp(parseInt(st.tidyMin, 10) || 15, 5, 60);
+    st.tidyCost = normCost(st.tidyCost, 0, TASK_COST_MAX) ?? 1;
+    st.tidyDaily = st.tidyDaily !== false;
+    // ── Stanze, progetti, riordino ──
+    if (migrateRooms && !d.rooms.length) d.rooms = defaultRooms();
+    d.rooms.forEach((r, i) => { r.name = String(r.name || '').trim() || 'Stanza'; if (typeof r.order !== 'number') r.order = i; });
+    d.projects.forEach((p, i) => {
+        p.name = String(p.name || '').trim() || 'Progetto';
+        p.roomId = p.roomId ? String(p.roomId) : null;
+        p.goal = typeof p.goal === 'string' ? p.goal : '';
+        p.status = ['active','paused','done'].includes(p.status) ? p.status : 'active';
+        if (typeof p.order !== 'number') p.order = i;
+        p.doneAt = isIso(p.doneAt) ? p.doneAt : null;
+    });
+    d.tidy = d.tidy.filter(x => isIso(x.date));
+    d.tidy.forEach(x => {
+        x.roomId = x.roomId ? String(x.roomId) : null;
+        x.roomName = String(x.roomName || '');
+        x.minutes = clamp(parseInt(x.minutes, 10) || 1, 1, 180);
+        x.cost = normCost(x.cost, 0, OTHER_COST_MAX) ?? 0;
+    });
     d.days = d.days.filter(x => isIso(x.id));
     const lvl = v => (v === null || v === undefined || v === '') ? null : clamp(parseInt(v, 10) || 0, 0, 3);
     d.days.forEach(x => {
         x.sleep = lvl(x.sleep); x.body = lvl(x.body); x.mind = lvl(x.mind);
         x.spoons = (typeof x.spoons === 'number' && x.spoons >= 0) ? Math.round(x.spoons) : null;
         x.debt = Math.max(0, parseInt(x.debt, 10) || 0);
-        x.extras = Array.isArray(x.extras) ? x.extras.filter(e => e && e.name).map(e => ({ id:String(e.id || uid()), name:String(e.name), cost:clamp(parseInt(e.cost, 10) || 1, 1, OTHER_COST_MAX) })) : [];
-        x.done = Array.isArray(x.done) ? x.done.filter(e => e && e.title).map(e => ({ ts:Number(e.ts) || 0, taskId:String(e.taskId || ''), title:String(e.title), cost:clamp(parseInt(e.cost, 10) || 1, 1, OTHER_COST_MAX) })) : [];
+        x.extras = Array.isArray(x.extras) ? x.extras.filter(e => e && e.name).map(e => ({ id:String(e.id || uid()), name:String(e.name), cost:normCost(e.cost, 0.25, OTHER_COST_MAX) ?? 1 })) : [];
+        x.done = Array.isArray(x.done) ? x.done.filter(e => e && e.title).map(e => ({ ts:Number(e.ts) || 0, taskId:String(e.taskId || ''), title:String(e.title), cost:normCost(e.cost, 0, OTHER_COST_MAX) ?? 0 })) : [];
         x.skipFixed = Array.isArray(x.skipFixed) ? x.skipFixed.map(String) : [];
     });
     return d;
@@ -242,13 +279,17 @@ function loadUi(){
     let u = {};
     try { u = JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch (_) {}
     return {
-        section: u.section === 'shop' ? 'shop' : 'tasks',
+        section: SECTIONS.includes(u.section) ? u.section : 'tasks',
         view: VIEWS.includes(u.view) ? u.view : 'today',
         shopFilter: u.shopFilter === 'need' ? 'need' : 'all',
         collapsed: (u.collapsed && typeof u.collapsed === 'object') ? u.collapsed : {},
         showDone: !!u.showDone,
         lastShopCat: u.lastShopCat || null,
         checkinSkip: u.checkinSkip || null,
+        projectId: u.projectId || null,
+        showDoneProjects: !!u.showDoneProjects,
+        tidyRoom: u.tidyRoom || null,
+        timer: (u.timer && typeof u.timer === 'object' && u.timer.total) ? u.timer : null,
     };
 }
 let ui = loadUi();
@@ -366,6 +407,7 @@ function toggleTheme(){
 
 // ── Navigazione ─────────────────────────────────────────────────────────────
 function setSection(s){
+    if (s === 'projects' && ui.section === 'projects') ui.projectId = null; // secondo tocco: torna all'elenco
     ui.section = s; saveUi();
     window.scrollTo(0, 0);
     render();
@@ -379,11 +421,13 @@ function setView(v){
 function render(){
     _pendingRender = false;
     _renderDay = todayStr();
-    $('tabTasks').classList.toggle('active', ui.section === 'tasks');
-    $('tabShop').classList.toggle('active', ui.section === 'shop');
+    SECTIONS.forEach(sec => { const b = $('nav_' + sec); if (b) b.classList.toggle('active', ui.section === sec); });
     $('fabAdd').classList.toggle('hidden', ui.section !== 'tasks');
     const app = $('appContent');
-    if (ui.section === 'shop') renderShop(app); else renderTasks(app);
+    if (ui.section === 'shop') renderShop(app);
+    else if (ui.section === 'projects') renderProjects(app);
+    else if (ui.section === 'tidy') renderTidy(app);
+    else renderTasks(app);
     updateBadges();
 }
 function updateBadges(){
@@ -391,9 +435,12 @@ function updateBadges(){
     const open = openTasks();
     const late = open.filter(t => t.date && t.date < today).length;
     const due = open.filter(t => t.date && t.date <= today).length;
-    const bt = $('badgeTasks'), bs = $('badgeShop');
+    const bt = $('badgeTasks'), bs = $('badgeShop'), bd = $('badgeTidy');
     if (bt) { bt.textContent = due || ''; bt.classList.toggle('alert', late > 0); bt.title = late ? `${late} in ritardo` : ''; }
     if (bs) { const n = data.shopItems.filter(i => i.need).length; bs.textContent = n || ''; }
+    if (bd) { bd.textContent = tidyBadgeText(); bd.classList.toggle('ok', !!tidyOn(today).length && !ui.timer); }
+    const bp = $('badgeProjects');
+    if (bp) bp.textContent = data.projects.filter(p => p.status === 'active').length || '';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -490,7 +537,9 @@ function buildIndex(from, to){
 function taskMetaHtml(t, opts = {}){
     const parts = [];
     const today = todayStr();
-    parts.push(`<span class="m-spoon" title="Cucchiaini">🥄${effectiveCost(t)}</span>`);
+    parts.push(`<span class="m-spoon" title="Cucchiaini">🥄${fmtSp(effectiveCost(t))}</span>`);
+    const pj = t.projectId ? getProject(t.projectId) : null;
+    if (pj && !opts.hideProject) parts.push(`<span>◆ ${escHtml(pj.name)}</span>`);
     if (opts.showDate && t.date) {
         const late = t.date < today;
         parts.push(`<span class="${late ? 'm-late' : ''}">${late ? 'scaduto ' : ''}${escHtml(fmtRel(t.date))}${t.time ? ' ' + t.time : ''}</span>`);
@@ -556,7 +605,7 @@ function renderToday(area){
     const open = openTasks();
     const late = open.filter(t => t.date && t.date < today).sort(cmpDateUrg);
     const todays = open.filter(t => t.date === today).sort(cmpUrgTime);
-    const undated = open.filter(t => !t.date).sort(cmpUrgTime);
+    const undated = open.filter(t => !t.date && !t.projectId).sort(cmpUrgTime);
     const tomorrows = open.filter(t => t.date === tomorrow).sort(cmpUrgTime);
     const often = open.filter(t => t.postponed >= 3).sort((a, b) => b.postponed - a.postponed);
     const summary = [];
@@ -673,7 +722,7 @@ function openDayFromDate(ds){
 
 // ── Elenco per categoria ────────────────────────────────────────────────────
 function renderListView(area){
-    const open = openTasks();
+    const open = openTasks().filter(t => t.date || !t.projectId);
     const cats = sortedCats();
     const catIds = new Set(cats.map(c => c.id));
     let html = '';
@@ -693,7 +742,7 @@ function renderListView(area){
     html += groupHtml('Senza categoria', 'var(--text-dim)', open.filter(t => !t.catId || !catIds.has(t.catId)), []);
     if (!html) html = `<div class="empty-note">Nessun impegno aperto. Tocca + per aggiungerne uno.</div>`;
 
-    const done = data.tasks.filter(t => t.done).sort((a, b) => (b.doneAt || '').localeCompare(a.doneAt || ''));
+    const done = data.tasks.filter(t => t.done && !t.projectId).sort((a, b) => (b.doneAt || '').localeCompare(a.doneAt || ''));
     const doneHtml = done.length ? `<div class="block" style="margin-top:8px;">
         <div class="block-title"><button class="link-btn" onclick="toggleShowDone()">${ui.showDone ? '▾' : '▸'} Completati (${done.length})</button>
             ${ui.showDone ? `<button class="link-btn danger" onclick="clearDoneTasks()">Svuota</button>` : ''}</div>
@@ -703,9 +752,10 @@ function renderListView(area){
 }
 function toggleShowDone(){ ui.showDone = !ui.showDone; saveUi(); renderTasksArea(); }
 function clearDoneTasks(){
-    const n = data.tasks.filter(t => t.done).length;
-    confirmDialog({ title:'Svuotare?', msg:`Elimino ${n} ${n === 1 ? 'impegno completato' : 'impegni completati'}. Quelli ricorrenti non vengono toccati.`, ok:'Svuota' }, () => {
-        data.tasks = data.tasks.filter(t => !t.done);
+    // I passi dei progetti restano: servono per l'avanzamento
+    const n = data.tasks.filter(t => t.done && !t.projectId).length;
+    confirmDialog({ title:'Svuotare?', msg:`Elimino ${n} ${n === 1 ? 'impegno completato' : 'impegni completati'}. Quelli ricorrenti e i passi dei progetti non vengono toccati.`, ok:'Svuota' }, () => {
+        data.tasks = data.tasks.filter(t => !t.done || t.projectId);
         save(); renderTasksArea();
     });
 }
@@ -793,6 +843,23 @@ function postponeBy(id, days){
     const base = t.date && t.date > today ? t.date : today;
     postponeTo(id, shiftDate(base, days));
 }
+// Dare una data a un impegno che non l'aveva non è un rinvio
+function planTo(id, iso){
+    const t = findTask(id);
+    if (!t || !isIso(iso)) return;
+    const before = cloneTask(t);
+    t.date = iso;
+    if (t.rec) { t.sched = iso; t.anchor = iso; }
+    save(); closeModal('modalSheet'); render();
+    const over = loadOn(iso) - budgetOn(iso);
+    showToast(over > 0 ? `In programma ${fmtRel(iso)}, ma sfori di ${fmtSp(over)} 🥄` : `In programma ${fmtRel(iso)}`, { label:'Annulla', fn:() => restoreTask(before) });
+}
+function planTask(id, days){ planTo(id, shiftDate(todayStr(), days)); }
+function planPicked(id){
+    const v = $('sheetDate') && $('sheetDate').value;
+    if (!isIso(v) || v < todayStr()) { showToast('⚠ Scegli una data da oggi in poi'); return; }
+    planTo(id, v);
+}
 function postponePicked(id){
     const v = $('sheetDate') && $('sheetDate').value;
     if (!isIso(v)) { showToast('⚠ Scegli una data'); return; }
@@ -810,7 +877,9 @@ function openTaskSheet(id, ghostDate){
     if (t.date && t.date < today && !t.done) rows.push(['Stato', '<span style="color:var(--danger)">In ritardo</span>']);
     rows.push(['Categoria', c ? escHtml(c.name + (s ? ' › ' + s.name : '')) : 'Nessuna']);
     rows.push(['Urgenza', `<span style="color:${taskColor(t)}">${URG_LABEL[t.urg]}</span>`]);
-    rows.push(['Cucchiaini', `🥄 ${effectiveCost(t)}${t.cost ? '' : ' <span style="color:var(--text-dim)">(predefinito)</span>'}`]);
+    rows.push(['Cucchiaini', `🥄 ${fmtSp(effectiveCost(t))}${t.cost !== null ? '' : ' <span style="color:var(--text-dim)">(predefinito)</span>'}`]);
+    const pj = t.projectId ? getProject(t.projectId) : null;
+    if (pj) rows.push(['Progetto', escHtml(pj.name)]);
     if (t.rec) rows.push(['Si ripete', escHtml(recLabel(t.rec))]);
     if (t.log.length) rows.push(['Ultima volta', escHtml(fmtDate(t.log[0]))]);
     if (t.postponed) rows.push(['Rimandato', `<span style="color:var(--warning)">${t.postponed} ${t.postponed === 1 ? 'volta' : 'volte'}</span>`]);
@@ -823,16 +892,22 @@ function openTaskSheet(id, ghostDate){
         ${t.notes ? `<div class="sheet-note">${escHtml(t.notes)}</div>` : ''}
         ${t.done ? `<button class="btn btn-primary" onclick="reopenTask(${a})">Riapri</button>` : `
             <button class="btn btn-primary" onclick="completeTask(${a})">✓ Fatto</button>
-            <div class="field-label">Rimanda</div>
+            ${t.date ? `<div class="field-label">Rimanda</div>
             <div class="postpone-grid">
                 <button class="btn btn-secondary" onclick="postponeBy(${a},1)">+1 giorno</button>
                 <button class="btn btn-secondary" onclick="postponeBy(${a},3)">+3 giorni</button>
                 <button class="btn btn-secondary" onclick="postponeBy(${a},7)">+1 settimana</button>
                 <button class="btn btn-secondary" onclick="$('sheetPick').classList.toggle('hidden')">Scegli data</button>
-            </div>
+            </div>` : `<div class="field-label">Pianifica</div>
+            <div class="postpone-grid">
+                <button class="btn btn-secondary" onclick="planTask(${a},0)">Oggi</button>
+                <button class="btn btn-secondary" onclick="planTask(${a},1)">Domani</button>
+                <button class="btn btn-secondary" onclick="planTask(${a},7)">Tra una settimana</button>
+                <button class="btn btn-secondary" onclick="$('sheetPick').classList.toggle('hidden')">Scegli data</button>
+            </div>`}
             <div id="sheetPick" class="hidden field-row" style="margin-top:8px;">
                 <input type="date" id="sheetDate" min="${today}" value="${shiftDate(today, 1)}" style="margin-bottom:0;">
-                <button class="add-btn" style="flex:0 0 auto;" onclick="postponePicked(${a})">Rimanda</button>
+                <button class="add-btn" style="flex:0 0 auto;" onclick="${t.date ? `postponePicked(${a})` : `planPicked(${a})`}">${t.date ? 'Rimanda' : 'Pianifica'}</button>
             </div>
             ${t.rec ? `<button class="btn btn-secondary" onclick="skipTask(${a})">Salta questa volta</button>` : ''}`}
         <div class="modal-btns" style="margin-top:9px;">
@@ -886,17 +961,31 @@ function fillSubSelect(selected){
 function formDefaultCost(){
     const c = getCat($('tCat').value);
     const s = c && !$('tSub').classList.contains('hidden') ? getSub(c, $('tSub').value) : null;
-    return (s && s.cost) || (c && c.cost) || 2;
+    if (s && s.cost !== null && s.cost !== undefined) return s.cost;
+    return c ? c.cost : 2;
 }
 function renderFormCost(){
     const box = $('tCost');
     if (!box) return;
     const def = formDefaultCost();
-    box.innerHTML = `<button type="button" class="chip${formCost === null ? ' on' : ''}" onclick="setFormCost(null)">Predefinito · ${def}</button>` +
-        [1, 2, 3, 4].map(n => `<button type="button" class="chip${formCost === n ? ' on' : ''}" onclick="setFormCost(${n})">${n}</button>`).join('');
-    $('tCostHint').textContent = COST_HINTS[formCost || def];
+    const cur = formCost === null ? def : formCost;
+    const custom = formCost !== null && formCost !== 0;
+    box.innerHTML = `<button type="button" class="chip${formCost === null ? ' on' : ''}" onclick="setFormCost(null)">Predefinito · ${fmtSp(def)}</button>
+        <button type="button" class="chip${formCost === 0 ? ' on' : ''}" onclick="setFormCost(0)">Zero</button>
+        <div class="sp-stepper${custom ? ' on' : ''}">
+            <button type="button" onclick="stepFormCost(-1)" aria-label="Un quarto in meno">−</button>
+            <span>🥄 ${fmtSp(cur)}</span>
+            <button type="button" onclick="stepFormCost(1)" aria-label="Un quarto in più">+</button>
+        </div>`;
+    $('tCostHint').textContent = costHint(cur);
 }
 function setFormCost(n){ formCost = n; renderFormCost(); }
+// ± un quarto di cucchiaino partendo dal valore mostrato
+function stepFormCost(dir){
+    const base = formCost === null ? formDefaultCost() : formCost;
+    formCost = clamp(qr(base + dir * 0.25), 0, TASK_COST_MAX);
+    renderFormCost();
+}
 function renderFormUrg(){
     const colors = { 1:'var(--accent)', 2:'var(--warning)', 3:'var(--danger)' };
     $('tUrg').innerHTML = [1, 2, 3].map(n => `<div class="t-dot${formUrg === n ? ' active' : ''}" style="background:${colors[n]}" onclick="setFormUrg(${n})">${URG_LABEL[n]}</div>`).join('');
@@ -941,12 +1030,14 @@ function openTaskModal(id){
     $('taskModalTitle').textContent = t ? 'Modifica impegno' : 'Nuovo impegno';
     $('tTitle').value = t ? t.title : '';
     formCost = t ? t.cost : null;
+    fillProjectSelect(t ? t.projectId : (ui.section === 'projects' ? ui.projectId : null));
     fillCatSelect(t ? t.catId : '');
     fillSubSelect(t ? t.subId : '');
     formUrg = t ? t.urg : 1;
     renderFormUrg();
     let defDate = todayStr();
     if (!t && ui.section === 'tasks' && ui.view === 'day') defDate = selectedDayIso();
+    if (!t && ui.section === 'projects') defDate = ''; // i passi di un progetto nascono senza data
     $('tDate').value = t ? (t.date || '') : defDate;
     $('tTime').value = t && t.time ? t.time : '';
     $('tRecUnit').value = t && t.rec ? t.rec.unit : '';
@@ -970,7 +1061,8 @@ function saveTask(){
     }
     const catId = $('tCat').value || null;
     const subId = catId && !$('tSub').classList.contains('hidden') ? ($('tSub').value || null) : null;
-    const fields = { title, catId, subId, urg:formUrg, cost:formCost, date, time:parseTimeInput($('tTime').value), notes:$('tNotes').value.trim(), rec };
+    const projectId = $('tProject').value || null;
+    const fields = { title, catId, subId, urg:formUrg, cost:formCost, projectId, date, time:parseTimeInput($('tTime').value), notes:$('tNotes').value.trim(), rec };
     if (editingTaskId) {
         const t = findTask(editingTaskId);
         if (!t) { closeModal('modalTask'); return; }
@@ -979,12 +1071,12 @@ function saveTask(){
         if (schedChanged) { t.sched = date; t.anchor = date; }
         if (rec) { t.done = false; t.doneAt = null; }
     } else {
-        data.tasks.push({ id:uid(), ...fields, sched:date, anchor:date, postponed:0, log:[], done:false, doneAt:null, created:Date.now() });
+        data.tasks.push({ id:uid(), ...fields, sched:date, anchor:date, postponed:0, log:[], done:false, doneAt:null, created:Date.now(), order:Date.now() });
     }
     save(); closeModal('modalTask'); render();
     // Avvisa subito se quel giorno supera le energie disponibili
     const over = date && date >= todayStr() ? loadOn(date) - budgetOn(date) : 0;
-    if (over > 0) showToast(`${editingTaskId ? 'Aggiornato' : 'Aggiunto'}, ma ${fmtRel(date)} sfori di ${over} 🥄`);
+    if (over > 0) showToast(`${editingTaskId ? 'Aggiornato' : 'Aggiunto'}, ma ${fmtRel(date)} sfori di ${fmtSp(over)} 🥄`);
     else showToast(editingTaskId ? 'Impegno aggiornato' : 'Impegno aggiunto');
     editingTaskId = null;
 }
@@ -1004,6 +1096,8 @@ function deleteTaskFromModal(){
 function openCatsModal(){ renderCatsBody(); openModal('modalCats'); }
 function renderCatsBody(){
     const cats = sortedCats();
+    const costOpts = (sel, withInherit, inh) => (withInherit ? `<option value=""${sel === null ? ' selected' : ''}>= ${fmtSp(inh)}</option>` : '') +
+        COST_STEPS.map(n => `<option value="${n}"${sel === n ? ' selected' : ''}>🥄${fmtSp(n)}</option>`).join('');
     $('catsBody').innerHTML = `<p class="confirm-msg" style="font-size:.76rem;margin-bottom:4px;">🥄 = cucchiaini che un impegno di quella categoria costa di solito. “=” vuol dire: come la categoria.</p>` + cats.map((c, i) => {
         const a = jsArg(c.id);
         return `<div class="mg-cat">
@@ -1011,7 +1105,7 @@ function renderCatsBody(){
                 <button class="mg-swatch" style="background:${c.color}" onclick="cycleCatColor(${a})" title="Cambia colore" aria-label="Cambia colore"></button>
                 <input type="text" value="${escHtml(c.name)}" maxlength="40" onchange="renameCat(${a},this.value)" aria-label="Nome categoria">
                 <select class="mg-cost" onchange="setCatCost(${a},null,this.value)" aria-label="Cucchiaini predefiniti">
-                    ${[1,2,3,4].map(n => `<option value="${n}"${c.cost === n ? ' selected' : ''}>🥄${n}</option>`).join('')}</select>
+                    ${costOpts(c.cost, false)}</select>
                 <button class="mg-btn" onclick="moveCat(${a},-1)" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su">▲</button>
                 <button class="mg-btn" onclick="moveCat(${a},1)" ${i === cats.length - 1 ? 'disabled' : ''} aria-label="Sposta giù">▼</button>
                 <button class="mg-btn danger" onclick="deleteCat(${a})" aria-label="Elimina">✕</button>
@@ -1020,8 +1114,7 @@ function renderCatsBody(){
                 ${c.subs.map(s => `<div class="mg-row">
                     <input type="text" value="${escHtml(s.name)}" maxlength="40" onchange="renameSub(${a},${jsArg(s.id)},this.value)" aria-label="Nome sottocategoria">
                     <select class="mg-cost" onchange="setCatCost(${a},${jsArg(s.id)},this.value)" aria-label="Cucchiaini">
-                        <option value=""${s.cost ? '' : ' selected'}>= ${c.cost}</option>
-                        ${[1,2,3,4].map(n => `<option value="${n}"${s.cost === n ? ' selected' : ''}>🥄${n}</option>`).join('')}</select>
+                        ${costOpts(s.cost, true, c.cost)}</select>
                     <button class="mg-btn danger" onclick="deleteSub(${a},${jsArg(s.id)})" aria-label="Elimina">✕</button></div>`).join('')}
                 <div class="mg-row"><input type="text" id="newSub_${escHtml(c.id)}" placeholder="+ sottocategoria" maxlength="40" onkeydown="if(event.key==='Enter'){event.preventDefault();addSub(${a});}">
                     <button class="mg-btn" onclick="addSub(${a})" aria-label="Aggiungi sottocategoria">+</button></div>
@@ -1035,9 +1128,9 @@ function catsChanged(){ save(); renderCatsBody(); _pendingRender = true; }
 function setCatCost(catId, subId, v){
     const c = getCat(catId);
     if (!c) return;
-    const n = parseInt(v, 10);
-    if (subId) { const s = getSub(c, subId); if (s) s.cost = (n >= 1 && n <= TASK_COST_MAX) ? n : null; }
-    else if (n >= 1 && n <= TASK_COST_MAX) c.cost = n;
+    const n = normCost(v, 0, TASK_COST_MAX);
+    if (subId) { const s = getSub(c, subId); if (s) s.cost = n; }
+    else if (n !== null) c.cost = n;
     catsChanged();
 }
 function addCat(){
@@ -1101,12 +1194,16 @@ function deleteSub(catId, subId){
 // ═══════════════════════════════════════════════════════════════════════════
 //  ENERGIE (teoria dei cucchiaini)
 // ═══════════════════════════════════════════════════════════════════════════
-const COST_HINTS = {
-    1:'Leggero: si fa senza pensarci (pagare online, innaffiare).',
-    2:'Medio: richiede un po’ di impegno (una lavatrice da stendere, la cucina).',
-    3:'Pesante: fatica fisica o tempo lungo (bagno a fondo, pavimenti).',
-    4:'Molto pesante: ti lascia stanca (cambio di stagione, pulizie grandi).',
-};
+const COST_STEPS = Array.from({ length:TASK_COST_MAX * 4 + 1 }, (_, i) => i / 4);       // 0 … 4 a quarti
+const OTHER_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8];   // spese fisse ed extra
+function costHint(v){
+    if (v === 0) return 'Zero: non pesa sulle energie (es. cambiare la pellicola al telefono).';
+    if (v < 1) return 'Quasi niente: pochi minuti, poca fatica.';
+    if (v < 2) return 'Leggero: si fa senza pensarci (pagare online, innaffiare).';
+    if (v < 3) return 'Medio: richiede un po’ di impegno (una lavatrice da stendere, la cucina).';
+    if (v < 4) return 'Pesante: fatica fisica o tempo lungo (bagno a fondo, pavimenti).';
+    return 'Molto pesante: ti lascia stanca (cambio di stagione, pulizie grandi).';
+}
 const CHECKIN_QS = [
     { key:'sleep', label:'Come hai dormito?', opts:['Bene','Così così','Poco o male','Malissimo'] },
     { key:'body', label:'Come sta il corpo?', opts:['In forma','Un po’ di stanchezza','Dolori o fatica','Molto provato'] },
@@ -1116,9 +1213,10 @@ function settings(){ return data.settings[0]; }
 // Un cucchiaino disegnato: coppa ovale + manico
 const SPOON_SVG = '<svg viewBox="0 0 12 34" aria-hidden="true"><path class="sp-fill" d="M6 1.2c2.9 0 4.8 2.6 4.8 6.1 0 3-1.6 5.3-3.6 5.9v18.3c0 .7-.5 1.3-1.2 1.3s-1.2-.6-1.2-1.3V13.2C2.8 12.6 1.2 10.3 1.2 7.3 1.2 3.8 3.1 1.2 6 1.2z"/></svg>';
 function effectiveCost(t){
-    if (t.cost) return t.cost;
+    if (t.cost !== null && t.cost !== undefined) return t.cost;
     const c = getCat(t.catId), s = getSub(c, t.subId);
-    return (s && s.cost) || (c && c.cost) || 2;
+    if (s && s.cost !== null && s.cost !== undefined) return s.cost;
+    return c ? c.cost : 2;
 }
 function dayRec(iso){ return data.days.find(d => d.id === iso) || null; }
 function ensureDay(iso){
@@ -1131,10 +1229,10 @@ function fixedFor(iso){
     const dow = isoDow(parseLocalDate(iso)), d = dayRec(iso), skip = d ? d.skipFixed : [];
     return data.fixedCosts.filter(f => !f.days.length || f.days.includes(dow)).map(f => ({ f, skipped:skip.includes(f.id) }));
 }
-function fixedSum(iso){ return fixedFor(iso).reduce((n, x) => n + (x.skipped ? 0 : x.f.cost), 0); }
-function extrasSum(iso){ const d = dayRec(iso); return d ? d.extras.reduce((n, e) => n + e.cost, 0) : 0; }
-function doneSum(iso){ const d = dayRec(iso); return d ? d.done.reduce((n, e) => n + e.cost, 0) : 0; }
-function spentOn(iso){ return fixedSum(iso) + extrasSum(iso) + doneSum(iso); }
+function fixedSum(iso){ return qr(fixedFor(iso).reduce((n, x) => n + (x.skipped ? 0 : x.f.cost), 0)); }
+function extrasSum(iso){ const d = dayRec(iso); return d ? qr(d.extras.reduce((n, e) => n + e.cost, 0)) : 0; }
+function doneSum(iso){ const d = dayRec(iso); return d ? qr(d.done.reduce((n, e) => n + e.cost, 0)) : 0; }
+function spentOn(iso){ return qr(fixedSum(iso) + extrasSum(iso) + doneSum(iso) + tidySum(iso)); }
 // Energia "tipica": media degli ultimi 14 check-in (servono almeno 3), altrimenti il massimo
 function typicalSpoons(){
     const today = todayStr();
@@ -1146,7 +1244,7 @@ function availableOn(iso){ return hasCheckin(iso) ? dayRec(iso).spoons : typical
 function budgetOn(iso){ return Math.max(0, availableOn(iso) - settings().reserve); }
 function openLoadToday(){
     const today = todayStr();
-    return openTasks().filter(t => t.date && t.date <= today).reduce((n, t) => n + effectiveCost(t), 0);
+    return qr(openTasks().filter(t => t.date && t.date <= today).reduce((n, t) => n + effectiveCost(t), 0) + tidyPlannedOn(today));
 }
 // Carico di un giorno. Oggi: già speso + in programma (compresi i ritardi).
 // Giorni futuri: spese fisse + impegni + ricorrenze previste. Passati: speso.
@@ -1155,7 +1253,7 @@ function loadOn(iso, idx){
     if (iso < today) return spentOn(iso);
     if (iso === today) return spentOn(iso) + openLoadToday();
     const items = (idx && idx.has(iso)) ? idx.get(iso) : (buildIndex(iso, iso).get(iso) || []);
-    return spentOn(iso) + items.reduce((n, it) => n + effectiveCost(it.t), 0);
+    return qr(spentOn(iso) + items.reduce((n, it) => n + effectiveCost(it.t), 0) + tidyPlannedOn(iso));
 }
 function loadTagHtml(iso, idx){
     const today = todayStr();
@@ -1163,23 +1261,23 @@ function loadTagHtml(iso, idx){
     const load = loadOn(iso, idx);
     if (iso < today) {
         const av = dayRec(iso).spoons;
-        return `<span class="load-tag${load > av ? ' over' : ''}" title="Spesi su disponibili">🥄 ${load}/${av}</span>`;
+        return `<span class="load-tag${load > av ? ' over' : ''}" title="Spesi su disponibili">🥄 ${fmtSp(load)}/${av}</span>`;
     }
     const bud = budgetOn(iso);
     const est = iso === today && hasCheckin(iso) ? '' : '≈';
-    return `<span class="load-tag${load > bud ? ' over' : ''}" title="Carico previsto su energie (riserva esclusa)">🥄 ${load}/${est}${bud}</span>`;
+    return `<span class="load-tag${load > bud ? ' over' : ''}" title="Carico previsto su energie (riserva esclusa)">🥄 ${fmtSp(load)}/${est}${fmtSp(bud)}</span>`;
 }
 function dayLoadLine(iso, idx){
     const today = todayStr();
     if (iso < today) {
         if (!hasCheckin(iso)) return '';
         const av = dayRec(iso).spoons, sp = spentOn(iso);
-        return `<div class="day-load${sp > av ? ' over' : ''}">Spesi ${sp} cucchiaini su ${av}</div>`;
+        return `<div class="day-load${sp > av ? ' over' : ''}">Spesi ${fmtSp(sp)} cucchiaini su ${av}</div>`;
     }
     const load = loadOn(iso, idx), bud = budgetOn(iso);
     const what = iso === today && hasCheckin(iso) ? 'disponibili oggi' : 'tipici';
     const over = load - bud;
-    return `<div class="day-load${over > 0 ? ' over' : ''}">Carico ${load} cucchiaini su ${bud} ${what} (riserva esclusa)${over > 0 ? `: sfori di ${over}` : ''}</div>`;
+    return `<div class="day-load${over > 0 ? ' over' : ''}">Carico ${fmtSp(load)} cucchiaini su ${fmtSp(bud)} ${what} (riserva esclusa)${over > 0 ? `: sfori di ${fmtSp(over)}` : ''}</div>`;
 }
 
 // ── Check-in del mattino ────────────────────────────────────────────────────
@@ -1187,7 +1285,7 @@ function debtFor(iso){
     if (!settings().debt) return 0;
     const y = shiftDate(iso, -1);
     if (!hasCheckin(y)) return 0;
-    const over = spentOn(y) - dayRec(y).spoons;
+    const over = Math.round(spentOn(y) - dayRec(y).spoons);
     return clamp(over, 0, Math.ceil(settings().max * 0.25));
 }
 // Ogni risposta toglie una parte del massimo: tutto "bene" = massimo, tutto "male" = un quarto
@@ -1253,7 +1351,7 @@ function saveCheckin(){
     d.spoons = ci.manual !== null ? ci.manual : p.result;
     save(); closeModal('modalCheckin'); render();
     const over = loadOn(today) - budgetOn(today);
-    showToast(over > 0 ? `${d.spoons} cucchiaini. Oggi sfori di ${over}: guarda i consigli` : `${d.spoons} cucchiaini per oggi`);
+    showToast(over > 0 ? `${d.spoons} cucchiaini. Oggi sfori di ${fmtSp(over)}: guarda i consigli` : `${d.spoons} cucchiaini per oggi`);
 }
 function skipCheckin(){
     if (!hasCheckin(todayStr())) { ui.checkinSkip = todayStr(); saveUi(); }
@@ -1268,7 +1366,7 @@ function suggestMoves(){
     if (!hasCheckin(today)) return { excess:0, moves:[] };
     let excess = loadOn(today) - budgetOn(today);
     if (excess <= 0) return { excess:0, moves:[] };
-    const pool = openTasks().filter(t => t.date && t.date <= today && t.urg < 3);
+    const pool = openTasks().filter(t => t.date && t.date <= today && t.urg < 3 && effectiveCost(t) > 0);
     const idx = buildIndex(shiftDate(today, 1), shiftDate(today, 21));
     const added = new Map(), moves = [];
     while (excess > 0 && pool.length) {
@@ -1288,7 +1386,7 @@ function suggestMoves(){
         target = target || best;
         added.set(target, (added.get(target) || 0) + c);
         moves.push({ t:pick, target, cost:c });
-        excess -= c;
+        excess = qr(excess - c);
     }
     return { excess:Math.max(0, excess), moves };
 }
@@ -1299,35 +1397,36 @@ function energyCardHtml(){
         <button class="add-btn" onclick="openCheckin()">Check-in</button></div></div>`;
     const S = dayRec(today).spoons, R = Math.min(st.reserve, S);
     const used = spentOn(today), planned = openLoadToday(), total = used + planned;
-    const n = Math.max(S, total);
+    const n = Math.max(S, Math.ceil(total - 0.001));
+    // Ogni cucchiaino si riempie dal basso: grigio = speso, miele = in programma
+    // (albicocca se tocca la riserva, lampone oltre il totale), vuoto = libero.
     const cells = Array.from({ length:n }, (_, i) => {
-        let cls = i < used ? 'spent' : i < total ? 'planned' : 'free';
-        if (i >= S) cls += ' over';
-        else if (i >= S - R) cls += ' reserve';
-        return `<span class="spoon ${cls}">${SPOON_SVG}</span>`;
+        const a = clamp(used - i, 0, 1) * 100, b = clamp(total - i, 0, 1) * 100;
+        const kind = i >= S ? 'over' : i >= S - R ? 'reserve' : 'norm';
+        return `<span class="spoon ${kind}" style="--a:${a}%;--b:${b}%"></span>`;
     }).join('');
     const left = S - used, freeBeyond = S - R - total;
     const { excess, moves } = suggestMoves();
     let status;
     if (moves.length || excess > 0) {
         const tot = total - (S - R);
-        status = `<div class="energy-over"><div class="eo-title">Oggi sfori di ${tot} ${tot === 1 ? 'cucchiaino' : 'cucchiaini'}${R ? ', riserva compresa' : ''}</div>
+        status = `<div class="energy-over"><div class="eo-title">Oggi sfori di ${fmtSp(tot)} ${spWord(tot)}${R ? ', riserva compresa' : ''}</div>
             ${moves.length ? `<div class="eo-sub">Ti suggerisco di spostare:</div>
-            ${moves.map(m => `<div class="eo-row"><span class="eo-name">${escHtml(m.t.title)} <span class="m-spoon">🥄${m.cost}</span></span>
+            ${moves.map(m => `<div class="eo-row"><span class="eo-name">${escHtml(m.t.title)} <span class="m-spoon">🥄${fmtSp(m.cost)}</span></span>
                 <button class="add-btn" onclick="applyMove(${jsArg(m.t.id)},${jsArg(m.target)})">${escHtml(fmtRel(m.target))}</button></div>`).join('')}
             ${moves.length > 1 ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="applyAllMoves()">Sposta tutti</button>` : ''}` : ''}
-            ${excess > 0 ? `<div class="eo-note">${moves.length ? 'Anche così resti oltre di ' + excess + ': il resto è urgente.' : 'Quello che resta è urgente.'} Fai solo l’indispensabile e, se puoi, chiedi una mano.</div>` : ''}
+            ${excess > 0 ? `<div class="eo-note">${moves.length ? 'Anche così resti oltre di ' + fmtSp(excess) + ': il resto è urgente.' : 'Quello che resta è urgente.'} Fai solo l’indispensabile e, se puoi, chiedi una mano.</div>` : ''}
         </div>`;
     } else if (freeBeyond >= 0) {
-        status = `<div class="energy-ok">${freeBeyond ? `Hai ancora ${freeBeyond} ${freeBeyond === 1 ? 'cucchiaino libero' : 'cucchiaini liberi'} oltre la riserva.` : 'Giornata piena ma sostenibile: la riserva è intatta.'}</div>`;
+        status = `<div class="energy-ok">${freeBeyond ? `Hai ancora ${fmtSp(freeBeyond)} ${qr(freeBeyond) === 1 ? 'cucchiaino libero' : 'cucchiaini liberi'} oltre la riserva.` : 'Giornata piena ma sostenibile: la riserva è intatta.'}</div>`;
     } else status = '';
     return `<div class="energy-card">
         <div class="energy-top">
-            <div><span class="energy-num">${Math.max(0, left)}</span><span class="energy-of">${left === 1 ? 'cucchiaino rimasto' : 'cucchiaini rimasti'} su ${S}</span></div>
+            <div><span class="energy-num">${fmtSp(Math.max(0, left))}</span><span class="energy-of">${qr(left) === 1 ? 'cucchiaino rimasto' : 'cucchiaini rimasti'} su ${S}</span></div>
             <button class="link-btn" onclick="setView('energy')">Dettagli</button>
         </div>
-        <div class="spoon-bar" aria-label="Spesi ${used}, in programma ${planned}, disponibili ${S}">${cells}</div>
-        <div class="energy-legend"><span><i class="lg spent"></i>Spesi ${used}</span><span><i class="lg planned"></i>In programma ${planned}</span>${R ? `<span><i class="lg reserve"></i>Riserva ${R}</span>` : ''}</div>
+        <div class="spoon-bar" aria-label="Spesi ${fmtSp(used)}, in programma ${fmtSp(planned)}, disponibili ${S}">${cells}</div>
+        <div class="energy-legend"><span><i class="lg spent"></i>Spesi ${fmtSp(used)}</span><span><i class="lg planned"></i>In programma ${fmtSp(planned)}</span><span><i class="lg free"></i>Liberi</span>${R ? `<span><i class="lg reserve"></i>Riserva ${R}</span>` : ''}</div>
         ${status}
         <button class="link-btn" onclick="openExtraQuick()">+ Altro che ti ha stancato oggi</button>
     </div>`;
@@ -1358,12 +1457,19 @@ function openCalib(taskId, ts, expected){
     if (!t) return;
     $('calibBody').innerHTML = `
         <div class="modal-title">Quanto ti è costato?</div>
-        <p class="confirm-msg" style="margin-bottom:12px;">${escHtml(t.title)}: avevo previsto ${expected} ${expected === 1 ? 'cucchiaino' : 'cucchiaini'}.</p>
-        <div class="calib-grid">${[1,2,3,4,5,6].map(n => `<button class="btn ${n === expected ? 'btn-primary' : 'btn-secondary'}" onclick="calibrate(${jsArg(taskId)},${ts},${n},${expected})">${n}</button>`).join('')}</div>
+        <p class="confirm-msg" style="margin-bottom:12px;">${escHtml(t.title)}: avevo previsto ${fmtSp(expected)} ${spWord(expected)}.</p>
+        <div class="calib-grid">${[0, 0.5, 1, 1.5, 2, 2.5, 3, 4].map(n => `<button class="btn ${n === expected ? 'btn-primary' : 'btn-secondary'}" onclick="calibrate(${jsArg(taskId)},${ts},${n},${expected})">${fmtSp(n)}</button>`).join('')}</div>
+        <div class="calib-fine"><span>Altro valore</span>
+            <div class="sp-stepper on"><button type="button" onclick="stepCalib(-1)" aria-label="Meno">−</button><span id="calibVal">🥄 ${fmtSp(expected)}</span><button type="button" onclick="stepCalib(1)" aria-label="Più">+</button></div>
+            <button class="add-btn" onclick="calibrate(${jsArg(taskId)},${ts},calibVal,${expected})">Salva</button></div>
         <button class="btn btn-secondary" onclick="closeModal('modalCalib')">Come previsto</button>`;
+    calibVal = expected;
     openModal('modalCalib');
 }
+let calibVal = 0;
+function stepCalib(dir){ calibVal = clamp(qr(calibVal + dir * 0.25), 0, OTHER_COST_MAX); $('calibVal').textContent = '🥄 ' + fmtSp(calibVal); }
 function calibrate(taskId, ts, n, expected){
+    n = qr(n);
     const today = todayStr(), d = dayRec(today);
     const entry = d && d.done.find(e => e.ts === ts);
     closeModal('modalCalib');
@@ -1371,13 +1477,13 @@ function calibrate(taskId, ts, n, expected){
     entry.cost = n;
     const t = findTask(taskId);
     // Gli impegni che si ripetono imparano il costo vero per la prossima volta
-    if (t && t.rec) t.cost = clamp(n, 1, TASK_COST_MAX);
+    if (t && t.rec) t.cost = clamp(n, 0, TASK_COST_MAX);
     save(); render();
-    showToast(t && t.rec ? `Segnato ${n}. La prossima volta lo conto ${clamp(n, 1, TASK_COST_MAX)}` : `Segnato: ${n} cucchiaini`);
+    showToast(t && t.rec ? `Segnato ${fmtSp(n)}. La prossima volta lo conto ${fmtSp(clamp(n, 0, TASK_COST_MAX))}` : `Segnato: ${fmtSp(n)} ${spWord(n)}`);
 }
 
 // ── Vista Energia ───────────────────────────────────────────────────────────
-function costOptions(sel){ return Array.from({ length:OTHER_COST_MAX }, (_, i) => i + 1).map(n => `<option value="${n}"${n === sel ? ' selected' : ''}>🥄 ${n}</option>`).join(''); }
+function costOptions(sel){ return OTHER_STEPS.map(n => `<option value="${n}"${n === sel ? ' selected' : ''}>🥄 ${fmtSp(n)}</option>`).join(''); }
 function renderEnergyView(area){
     const today = todayStr(), st = settings(), d = dayRec(today), checked = hasCheckin(today);
     const ans = checked ? CHECKIN_QS.filter(q => d[q.key] !== null).map(q => `${q.label.replace('?', '')}: ${q.opts[d[q.key]].toLowerCase()}`) : [];
@@ -1391,23 +1497,23 @@ function renderEnergyView(area){
                 : `<button class="btn btn-primary" style="margin-top:0;" onclick="openCheckin()">Fai il check-in</button>`}
             <div class="field-label">Spese fisse di oggi</div>
             ${fixed.length ? fixed.map(x => `<div class="e-row${x.skipped ? ' off' : ''}" onclick="toggleFixedToday(${jsArg(x.f.id)})" role="checkbox" aria-checked="${!x.skipped}">
-                <span class="shop-box"></span><span class="e-name">${escHtml(x.f.name)}</span><span class="m-spoon">🥄${x.f.cost}</span></div>`).join('')
+                <span class="shop-box"></span><span class="e-name">${escHtml(x.f.name)}</span><span class="m-spoon">🥄${fmtSp(x.f.cost)}</span></div>`).join('')
                 + `<div class="e-hint">Togli la spunta a quello che oggi non fai (es. niente lezioni).</div>`
                 : `<div class="empty-note">Nessuna spesa fissa per oggi.</div>`}
             <div class="field-label">Altro che ti ha stancato oggi</div>
-            ${extras.map(e => `<div class="e-row static"><span class="e-name">${escHtml(e.name)}</span><span class="m-spoon">🥄${e.cost}</span>
+            ${extras.map(e => `<div class="e-row static"><span class="e-name">${escHtml(e.name)}</span><span class="m-spoon">🥄${fmtSp(e.cost)}</span>
                 <button class="shop-edit" onclick="removeExtra(${jsArg(e.id)})" aria-label="Elimina">✕</button></div>`).join('')}
             <div class="e-add">
                 <input type="text" id="exName" placeholder="Visita, viaggio, esame…" maxlength="50" onkeydown="if(event.key==='Enter'){event.preventDefault();addExtra();}">
                 <select class="styled-select" id="exCost" aria-label="Cucchiaini">${costOptions(1)}</select>
                 <button class="add-btn" onclick="addExtra()">Aggiungi</button>
             </div>
-            ${done.length ? `<div class="field-label">Fatti oggi</div>${done.map(e => `<div class="e-row static"><span class="e-name">${escHtml(e.title)}</span><span class="m-spoon">🥄${e.cost}</span></div>`).join('')}` : ''}
+            ${done.length ? `<div class="field-label">Fatti oggi</div>${done.map(e => `<div class="e-row static"><span class="e-name">${escHtml(e.title)}</span><span class="m-spoon">🥄${fmtSp(e.cost)}</span></div>`).join('')}` : ''}
         </div>
         <div class="block card"><div class="block-title"><span>Andamento</span><span class="count">14 giorni</span></div>${energyChartHtml()}</div>
         <div class="block card"><div class="block-title"><span>Spese fisse</span></div>
             ${data.fixedCosts.map(f => `<div class="e-row" onclick="openFixedModal(${jsArg(f.id)})"><span class="e-name">${escHtml(f.name)}
-                <span class="e-days">${f.days.length ? f.days.map(n => ISO_DOW_LABELS[n].toLowerCase()).join(', ') : 'ogni giorno'}</span></span><span class="m-spoon">🥄${f.cost}</span></div>`).join('')
+                <span class="e-days">${f.days.length ? f.days.map(n => ISO_DOW_LABELS[n].toLowerCase()).join(', ') : 'ogni giorno'}</span></span><span class="m-spoon">🥄${fmtSp(f.cost)}</span></div>`).join('')
                 || `<div class="empty-note">Nessuna spesa fissa. Aggiungi le cose che fai quasi ogni giorno: igiene, lezioni, lavoro.</div>`}
             <button class="btn btn-secondary" onclick="openFixedModal()">+ Spesa fissa</button>
         </div>
@@ -1476,7 +1582,7 @@ function toggleFixedToday(id){
 function addExtra(){
     const name = $('exName').value.trim();
     if (!name) { $('exName').focus(); return; }
-    ensureDay(todayStr()).extras.push({ id:uid(), name, cost:clamp(parseInt($('exCost').value, 10) || 1, 1, OTHER_COST_MAX) });
+    ensureDay(todayStr()).extras.push({ id:uid(), name, cost:normCost($('exCost').value, 0.25, OTHER_COST_MAX) ?? 1 });
     save(); render();
     showToast(`${name} aggiunto`);
 }
@@ -1502,7 +1608,8 @@ function openFixedModal(id){
     openModal('modalFixed');
 }
 function renderFixedForm(){
-    $('fxCost').innerHTML = Array.from({ length:OTHER_COST_MAX }, (_, i) => i + 1).map(n => `<button type="button" class="chip${fxCost === n ? ' on' : ''}" onclick="fxCost=${n};renderFixedForm()">${n}</button>`).join('');
+    $('fxCost').innerHTML = [0.5, 1, 2, 3].map(n => `<button type="button" class="chip${fxCost === n ? ' on' : ''}" onclick="fxCost=${n};renderFixedForm()">${fmtSp(n)}</button>`).join('') +
+        `<div class="sp-stepper on"><button type="button" onclick="fxCost=clamp(qr(fxCost-0.25),0.25,OTHER_COST_MAX);renderFixedForm()" aria-label="Meno">−</button><span>🥄 ${fmtSp(fxCost)}</span><button type="button" onclick="fxCost=clamp(qr(fxCost+0.25),0.25,OTHER_COST_MAX);renderFixedForm()" aria-label="Più">+</button></div>`;
     $('fxDays').innerHTML = [1,2,3,4,5,6,7].map(d => `<button type="button" class="chip${fxDays.includes(d) ? ' on' : ''}" onclick="toggleFxDay(${d})">${ISO_DOW_LABELS[d]}</button>`).join('');
     $('fxHint').textContent = fxDays.length ? '' : 'Nessun giorno scelto: vale tutti i giorni.';
 }
@@ -1523,6 +1630,401 @@ function deleteFixed(){
         data.fixedCosts = data.fixedCosts.filter(x => x.id !== f.id);
         save(); closeModal('modalFixed'); render();
     });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  STANZE (condivise tra Progetti e Riordino)
+// ═══════════════════════════════════════════════════════════════════════════
+function sortedRooms(){ return [...data.rooms].sort((a, b) => a.order - b.order); }
+function getRoom(id){ return id ? data.rooms.find(r => r.id === id) || null : null; }
+function openRoomsModal(){ renderRoomsBody(); openModal('modalRooms'); }
+function renderRoomsBody(){
+    const rooms = sortedRooms();
+    $('roomsBody').innerHTML = rooms.map((r, i) => {
+        const a = jsArg(r.id);
+        return `<div class="mg-cat"><div class="mg-row">
+            <input type="text" value="${escHtml(r.name)}" maxlength="40" onchange="renameRoom(${a},this.value)" aria-label="Nome stanza">
+            <button class="mg-btn" onclick="moveRoom(${a},-1)" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su">▲</button>
+            <button class="mg-btn" onclick="moveRoom(${a},1)" ${i === rooms.length - 1 ? 'disabled' : ''} aria-label="Sposta giù">▼</button>
+            <button class="mg-btn danger" onclick="deleteRoom(${a})" aria-label="Elimina">✕</button>
+        </div></div>`;
+    }).join('') + `<div class="mg-row" style="margin-top:14px;">
+        <input type="text" id="newRoom" placeholder="Nuova stanza (es. balcone, cameretta)" maxlength="40" onkeydown="if(event.key==='Enter'){event.preventDefault();addRoom();}">
+        <button class="add-btn" onclick="addRoom()">Aggiungi</button></div>`;
+}
+function roomsChanged(){ save(); renderRoomsBody(); _pendingRender = true; }
+function addRoom(){
+    const name = $('newRoom').value.trim();
+    if (!name) return;
+    const maxO = data.rooms.reduce((m, r) => Math.max(m, r.order), -1);
+    data.rooms.push({ id:uid(), name, order:maxO + 1 });
+    roomsChanged();
+}
+function renameRoom(id, v){ const r = getRoom(id); v = String(v).trim(); if (r && v) { r.name = v; save(); _pendingRender = true; } }
+function moveRoom(id, dir){
+    const rooms = sortedRooms(), i = rooms.findIndex(r => r.id === id), j = i + dir;
+    if (i < 0 || j < 0 || j >= rooms.length) return;
+    [rooms[i], rooms[j]] = [rooms[j], rooms[i]];
+    rooms.forEach((r, k) => { if (r.order !== k) r.order = k; });
+    roomsChanged();
+}
+function deleteRoom(id){
+    const r = getRoom(id);
+    if (!r) return;
+    confirmDialog({ title:'Eliminare?', msg:`La stanza “${r.name}” sparisce dall’elenco. Progetti e storico del riordino restano.` }, () => {
+        data.projects.forEach(p => { if (p.roomId === id) p.roomId = null; });
+        data.rooms = data.rooms.filter(x => x.id !== id);
+        if (ui.tidyRoom === id) { ui.tidyRoom = null; saveUi(); }
+        roomsChanged();
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PROGETTI (sistemare le stanze passo dopo passo)
+// ═══════════════════════════════════════════════════════════════════════════
+function getProject(id){ return id ? data.projects.find(p => p.id === id) || null : null; }
+function projectSteps(id){ return data.tasks.filter(t => t.projectId === id).sort((a, b) => (a.order - b.order) || (a.created || 0) - (b.created || 0)); }
+function projectStats(id){
+    const steps = projectSteps(id), done = steps.filter(t => t.done || (t.rec && t.log.length));
+    const open = steps.filter(t => !t.done && !t.rec);
+    return { total:steps.length, done:done.length, left:qr(open.reduce((n, t) => n + effectiveCost(t), 0)), next:open[0] || null };
+}
+function fillProjectSelect(selected){
+    const sel = $('tProject');
+    const list = data.projects.filter(p => p.status !== 'done' || p.id === selected).sort((a, b) => a.order - b.order);
+    sel.innerHTML = `<option value="">Nessun progetto</option>` +
+        list.map(p => `<option value="${escHtml(p.id)}"${p.id === selected ? ' selected' : ''}>${escHtml(p.name)}</option>`).join('');
+    $('tProjectRow').classList.toggle('hidden', !list.length);
+}
+function renderProjects(app){
+    const p = getProject(ui.projectId);
+    if (p) { renderProjectDetail(app, p); return; }
+    if (ui.projectId) { ui.projectId = null; saveUi(); }
+    const all = [...data.projects].sort((a, b) => a.order - b.order);
+    const active = all.filter(x => x.status !== 'done'), done = all.filter(x => x.status === 'done');
+    const card = x => {
+        const st = projectStats(x.id), room = getRoom(x.roomId);
+        const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
+        return `<div class="proj-card${x.status === 'paused' ? ' paused' : ''}" onclick="openProject(${jsArg(x.id)})">
+            <div class="proj-top"><span class="proj-name">${escHtml(x.name)}</span>${x.status === 'paused' ? '<span class="pill">in pausa</span>' : x.status === 'done' ? '<span class="pill ok">fatto</span>' : ''}</div>
+            ${room ? `<div class="proj-room">${escHtml(room.name)}</div>` : ''}
+            <div class="progress"><span style="width:${pct}%"></span></div>
+            <div class="proj-meta">${st.total ? `${st.done} di ${st.total} passi` : 'Nessun passo ancora'}${st.left ? ` · mancano ${fmtSp(st.left)} 🥄` : ''}</div>
+            ${st.next && x.status !== 'done' ? `<div class="proj-next">Prossimo: ${escHtml(st.next.title)}</div>` : ''}
+        </div>`;
+    };
+    app.innerHTML = `
+        <div class="sec-head"><div><div class="sec-title">Progetti</div><div class="sec-sub">Sistemare casa un passo alla volta</div></div>
+            <button class="add-btn" onclick="openProjectModal()">+ Nuovo</button></div>
+        ${active.length ? active.map(card).join('') : `<div class="empty-note">Ancora nessun progetto. Pensa a una stanza che vorresti diversa: dividi il lavoro in piccoli passi e falli quando hai energie.</div>`}
+        ${done.length ? `<div class="block" style="margin-top:18px;"><div class="block-title"><button class="link-btn" onclick="ui.showDoneProjects=!ui.showDoneProjects;saveUi();render()">${ui.showDoneProjects ? '▾' : '▸'} Completati (${done.length})</button></div>
+            ${ui.showDoneProjects ? done.map(card).join('') : ''}</div>` : ''}
+        <button class="btn btn-secondary" onclick="openRoomsModal()">Gestisci stanze</button>`;
+}
+function openProject(id){ ui.projectId = id; saveUi(); window.scrollTo(0, 0); render(); }
+function closeProject(){ ui.projectId = null; saveUi(); render(); }
+function stepRowHtml(t, i, n){
+    const a = jsArg(t.id);
+    const meta = [`🥄${fmtSp(effectiveCost(t))}`];
+    if (t.date) meta.push(fmtRel(t.date) + (t.time ? ' ' + t.time : ''));
+    if (t.rec) meta.push('↻ ' + recLabel(t.rec));
+    return `<div class="step-row${t.done ? ' done' : ''}">
+        <button class="task-check${t.done ? ' checked' : ''}" style="--c:var(--accent)" onclick="${t.done ? `reopenTask(${a})` : `completeTask(${a})`}" aria-label="${t.done ? 'Riapri' : 'Fatto'}">${t.done ? '✓' : ''}</button>
+        <div class="step-body" onclick="openTaskSheet(${a})"><div class="step-title">${escHtml(t.title)}</div><div class="task-meta">${meta.map(m => `<span>${escHtml(m)}</span>`).join('')}</div></div>
+        ${t.done ? '' : `<div class="step-move"><button onclick="moveStep(${a},-1)" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su">▲</button><button onclick="moveStep(${a},1)" ${i === n - 1 ? 'disabled' : ''} aria-label="Sposta giù">▼</button></div>`}
+    </div>`;
+}
+let stepCost = 1;
+function renderProjectDetail(app, p){
+    const st = projectStats(p.id), room = getRoom(p.roomId);
+    const steps = projectSteps(p.id), open = steps.filter(t => !t.done), done = steps.filter(t => t.done);
+    const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
+    const allDone = st.total > 0 && !open.some(t => !t.rec) && p.status !== 'done';
+    const a = jsArg(p.id);
+    app.innerHTML = `
+        <button class="link-btn back" onclick="closeProject()">‹ Progetti</button>
+        <div class="sec-title" style="margin-top:6px;">${escHtml(p.name)}</div>
+        <div class="sec-sub">${room ? escHtml(room.name) + ' · ' : ''}${p.status === 'paused' ? 'in pausa' : p.status === 'done' ? `completato${p.doneAt ? ' il ' + fmtDate(p.doneAt) : ''}` : 'in corso'}</div>
+        ${p.goal ? `<div class="sheet-note" style="margin-top:12px;">${escHtml(p.goal)}</div>` : ''}
+        <div class="progress big"><span style="width:${pct}%"></span></div>
+        <div class="proj-meta">${st.total ? `${st.done} di ${st.total} passi` : 'Aggiungi il primo passo qui sotto'}${st.left ? ` · mancano ${fmtSp(st.left)} cucchiaini` : ''}</div>
+        ${allDone ? `<div class="celebrate">Tutti i passi sono fatti!<button class="btn btn-primary" onclick="setProjectStatus(${a},'done')">Segna il progetto come completato</button></div>` : ''}
+        <div class="block" style="margin-top:18px;">
+            <div class="block-title"><span>Passi</span><span class="count">${open.length || ''}</span></div>
+            ${open.map((t, i) => stepRowHtml(t, i, open.length)).join('') || `<div class="empty-note">Nessun passo da fare.</div>`}
+            <div class="step-add">
+                <input type="text" id="stepTitle" placeholder="Nuovo passo (es. svuotare l’armadio)" maxlength="140" onkeydown="if(event.key==='Enter'){event.preventDefault();addStep();}">
+                <div class="sp-stepper on"><button type="button" onclick="stepCost=clamp(qr(stepCost-0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Meno">−</button><span id="stepCostVal">🥄 ${fmtSp(stepCost)}</span><button type="button" onclick="stepCost=clamp(qr(stepCost+0.25),0,TASK_COST_MAX);$('stepCostVal').textContent='🥄 '+fmtSp(stepCost)" aria-label="Più">+</button></div>
+                <button class="add-btn" onclick="addStep()">Aggiungi</button>
+            </div>
+            <div class="e-hint">I passi senza data restano qui. Quando vuoi farne uno, toccalo e scegli un giorno: comparirà negli impegni e nelle energie.</div>
+        </div>
+        ${done.length ? `<div class="block"><div class="block-title"><span>Fatti</span><span class="count">${done.length}</span></div>${done.map((t, i) => stepRowHtml(t, i, done.length)).join('')}</div>` : ''}
+        <div class="modal-btns">
+            <button class="btn btn-secondary" onclick="openProjectModal(${a})">Modifica</button>
+            ${p.status === 'active' ? `<button class="btn btn-secondary" onclick="setProjectStatus(${a},'paused')">Metti in pausa</button>`
+                : `<button class="btn btn-secondary" onclick="setProjectStatus(${a},'active')">${p.status === 'done' ? 'Riapri' : 'Riprendi'}</button>`}
+        </div>`;
+}
+function addStep(){
+    const inp = $('stepTitle'), title = inp ? inp.value.trim() : '';
+    if (!title) { if (inp) inp.focus(); return; }
+    const p = getProject(ui.projectId);
+    if (!p) return;
+    const now = Date.now();
+    data.tasks.push({ id:uid(), title, catId:null, subId:null, urg:1, cost:stepCost, projectId:p.id, date:null, time:null, notes:'',
+        rec:null, sched:null, anchor:null, postponed:0, log:[], done:false, doneAt:null, created:now, order:now });
+    if (p.status === 'done') p.status = 'active';
+    save(); render();
+    const again = $('stepTitle'); if (again) again.focus();
+}
+function moveStep(id, dir){
+    const t = findTask(id);
+    if (!t) return;
+    const open = projectSteps(t.projectId).filter(x => !x.done);
+    const i = open.findIndex(x => x.id === id), j = i + dir;
+    if (i < 0 || j < 0 || j >= open.length) return;
+    [open[i], open[j]] = [open[j], open[i]];
+    open.forEach((x, k) => { x.order = k; });
+    save(); render();
+}
+function setProjectStatus(id, status){
+    const p = getProject(id);
+    if (!p) return;
+    p.status = status;
+    p.doneAt = status === 'done' ? todayStr() : null;
+    save(); render();
+    if (status === 'done') showToast(`🎉 ${p.name}: completato!`);
+}
+let editingProjectId = null;
+function openProjectModal(id){
+    const p = getProject(id);
+    editingProjectId = p ? p.id : null;
+    $('pjTitle').textContent = p ? 'Modifica progetto' : 'Nuovo progetto';
+    $('pjName').value = p ? p.name : '';
+    $('pjGoal').value = p ? p.goal : '';
+    $('pjRoom').innerHTML = `<option value="">Nessuna stanza</option>` + sortedRooms().map(r => `<option value="${escHtml(r.id)}"${p && p.roomId === r.id ? ' selected' : ''}>${escHtml(r.name)}</option>`).join('');
+    $('pjDelete').classList.toggle('hidden', !p);
+    openModal('modalProject');
+}
+function saveProject(){
+    const name = $('pjName').value.trim();
+    if (!name) { showToast('⚠ Dai un nome al progetto'); return; }
+    const fields = { name, roomId:$('pjRoom').value || null, goal:$('pjGoal').value.trim() };
+    if (editingProjectId) {
+        const p = getProject(editingProjectId);
+        if (p) Object.assign(p, fields);
+    } else {
+        const id = uid(), maxO = data.projects.reduce((m, x) => Math.max(m, x.order), -1);
+        data.projects.push({ id, ...fields, status:'active', order:maxO + 1, doneAt:null, created:Date.now() });
+        ui.projectId = id; saveUi();
+    }
+    save(); closeModal('modalProject'); render();
+}
+function deleteProject(){
+    const p = getProject(editingProjectId);
+    if (!p) return;
+    const n = data.tasks.filter(t => t.projectId === p.id).length;
+    confirmDialog({ title:'Eliminare?', msg:`“${p.name}” verrà eliminato${n ? `, insieme ai suoi ${n} passi` : ''}.` }, () => {
+        data.tasks = data.tasks.filter(t => t.projectId !== p.id);
+        data.projects = data.projects.filter(x => x.id !== p.id);
+        ui.projectId = null; saveUi();
+        save(); closeModal('modalProject'); render();
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  RIORDINO (metodo FlyLady: un timer, una stanza, niente perfezionismo)
+// ═══════════════════════════════════════════════════════════════════════════
+function tidyOn(iso){ return data.tidy.filter(x => x.date === iso); }
+function tidySum(iso){ return qr(tidyOn(iso).reduce((n, x) => n + x.cost, 0)); }
+// Se il riordino quotidiano è attivo, conta come "in programma" finché non lo fai
+function tidyPlannedOn(iso){
+    const st = settings();
+    if (!st.tidyDaily || iso < todayStr() || tidyOn(iso).length) return 0;
+    return st.tidyCost;
+}
+function lastTidyOf(roomId){
+    let last = null;
+    data.tidy.forEach(x => { if (x.roomId === roomId && (!last || x.date > last)) last = x.date; });
+    return last;
+}
+function suggestedRoom(){
+    const rooms = sortedRooms();
+    if (!rooms.length) return null;
+    return rooms.reduce((best, r) => {
+        const a = lastTidyOf(r.id) || '0000', b = lastTidyOf(best.id) || '0000';
+        return a < b ? r : best;
+    }, rooms[0]);
+}
+function tidyStreak(){
+    const dates = new Set(data.tidy.map(x => x.date));
+    let d = todayStr();
+    if (!dates.has(d)) d = shiftDate(d, -1);
+    let n = 0;
+    while (dates.has(d) && n < 3650) { n++; d = shiftDate(d, -1); }
+    return n;
+}
+function relDays(iso){
+    if (!iso) return 'mai';
+    const n = daysBetween(iso, todayStr());
+    return n === 0 ? 'oggi' : n === 1 ? 'ieri' : `${n} giorni fa`;
+}
+function timerLeft(){
+    const tm = ui.timer;
+    if (!tm) return 0;
+    return tm.endAt ? Math.max(0, Math.round((tm.endAt - Date.now()) / 1000)) : tm.left;
+}
+function fmtClock(sec){ return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; }
+function tidyBadgeText(){
+    if (ui.timer) return `${Math.ceil(timerLeft() / 60)}′`;
+    return tidyOn(todayStr()).length ? '✓' : '';
+}
+function renderTidy(app){
+    const st = settings(), today = todayStr(), tm = ui.timer;
+    const rooms = sortedRooms(), sug = suggestedRoom();
+    if (!getRoom(ui.tidyRoom)) ui.tidyRoom = sug ? sug.id : null;
+    const sel = getRoom(ui.tidyRoom);
+    const doneToday = tidyOn(today), streak = tidyStreak();
+    const recent = [...data.tidy].sort((a, b) => b.date.localeCompare(a.date) || 0).slice(0, 7);
+    let timerHtml;
+    if (tm) {
+        const left = timerLeft(), frac = tm.total ? left / tm.total : 0;
+        const room = getRoom(tm.roomId);
+        const C = 2 * Math.PI * 88;
+        timerHtml = `<div class="timer-card">
+            <div class="timer-room">${escHtml(room ? room.name : tm.roomName || 'Riordino')}</div>
+            <div class="ring"><svg viewBox="0 0 200 200"><circle class="ring-bg" cx="100" cy="100" r="88"/>
+                <circle class="ring-fg" id="tidyRing" cx="100" cy="100" r="88" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - frac)}"/></svg>
+                <div class="ring-clock" id="tidyClock">${fmtClock(left)}</div></div>
+            <div class="timer-note">${tm.endAt ? 'Non serve che sia perfetto: quando suona, ti fermi.' : 'In pausa'}</div>
+            <div class="modal-btns">
+                ${tm.endAt ? `<button class="btn btn-secondary" onclick="pauseTidy()">Pausa</button>` : `<button class="btn btn-primary" onclick="resumeTidy()">Riprendi</button>`}
+                <button class="btn btn-secondary" onclick="finishTidy(false)">Ho finito</button>
+            </div>
+            <button class="link-btn danger" style="margin-top:10px;" onclick="cancelTidy()">Annulla senza salvare</button>
+        </div>`;
+    } else {
+        timerHtml = `<div class="timer-card">
+            ${doneToday.length ? `<div class="tidy-done">Oggi hai già riordinato: ${escHtml(doneToday.map(x => (getRoom(x.roomId) || {}).name || x.roomName).join(', '))}. Basta così, oppure un altro giro se ti va.</div>` : ''}
+            <div class="field-label" style="margin-top:0;">Dove oggi?</div>
+            <div class="room-grid">${rooms.map(r => {
+                const last = lastTidyOf(r.id);
+                return `<button class="room-card${r.id === ui.tidyRoom ? ' on' : ''}" onclick="ui.tidyRoom=${jsArg(r.id)};saveUi();render()">
+                    <span class="room-name">${escHtml(r.name)}</span><span class="room-last">${r.id === (sug && sug.id) && last !== today ? 'suggerita · ' : ''}${relDays(last)}</span></button>`;
+            }).join('') || `<div class="empty-note">Aggiungi le tue stanze.</div>`}</div>
+            <button class="btn btn-primary big-start" onclick="startTidy()" ${sel ? '' : 'disabled'}>Inizia ${st.tidyMin} minuti${sel ? ' in ' + escHtml(sel.name.toLowerCase()) : ''}</button>
+        </div>`;
+    }
+    app.innerHTML = `
+        <div class="sec-head"><div><div class="sec-title">Riordino</div><div class="sec-sub">${st.tidyMin} minuti al giorno, una stanza alla volta</div></div>
+            ${streak ? `<span class="streak">${streak} ${streak === 1 ? 'giorno' : 'giorni'} di fila</span>` : ''}</div>
+        ${timerHtml}
+        ${recent.length ? `<div class="block card"><div class="block-title"><span>Ultime volte</span></div>
+            ${recent.map(x => `<div class="e-row static"><span class="e-name">${escHtml((getRoom(x.roomId) || {}).name || x.roomName || 'Stanza')}<span class="e-days">${escHtml(relDays(x.date))}, ${x.minutes} min</span></span>
+                <span class="m-spoon">🥄${fmtSp(x.cost)}</span><button class="shop-edit" onclick="deleteTidy(${jsArg(x.id)})" aria-label="Elimina">✕</button></div>`).join('')}</div>` : ''}
+        <div class="block card"><div class="block-title"><span>Impostazioni</span></div>
+            <div class="set-row"><div><div class="set-name">Durata</div></div>
+                <div class="chip-row" style="margin:0;">${[10, 15, 20, 30].map(n => `<button class="chip${st.tidyMin === n ? ' on' : ''}" onclick="setTidyMin(${n})">${n}′</button>`).join('')}</div></div>
+            <div class="set-row"><div><div class="set-name">Cucchiaini</div><div class="set-desc">Quanto ti costa un giro completo</div></div>
+                <div class="sp-stepper on"><button onclick="stepTidyCost(-1)" aria-label="Meno">−</button><span>🥄 ${fmtSp(st.tidyCost)}</span><button onclick="stepTidyCost(1)" aria-label="Più">+</button></div></div>
+            <label class="check-row set-check"><input type="checkbox" ${st.tidyDaily ? 'checked' : ''} onchange="settings().tidyDaily=this.checked;save();">
+                <span><b>Mettilo in programma ogni giorno</b>: finché non lo fai conta tra le energie previste</span></label>
+            <button class="btn btn-secondary" onclick="openRoomsModal()">Gestisci stanze</button>
+        </div>`;
+    if (tm && tm.endAt) startTick();
+}
+function setTidyMin(n){ settings().tidyMin = n; save(); render(); }
+function stepTidyCost(dir){ const st = settings(); st.tidyCost = clamp(qr(st.tidyCost + dir * 0.25), 0, TASK_COST_MAX); save(); render(); }
+
+// ── Timer ───────────────────────────────────────────────────────────────────
+let _tick = null, _wake = null, _audio = null;
+function startTick(){
+    clearInterval(_tick);
+    _tick = setInterval(() => {
+        if (!ui.timer || !ui.timer.endAt) { clearInterval(_tick); return; }
+        const left = timerLeft();
+        const clock = $('tidyClock'), ring = $('tidyRing');
+        if (clock) clock.textContent = fmtClock(left);
+        if (ring) { const C = 2 * Math.PI * 88; ring.setAttribute('stroke-dashoffset', C * (1 - left / ui.timer.total)); }
+        const bd = $('badgeTidy'); if (bd) bd.textContent = tidyBadgeText();
+        if (left <= 0) finishTidy(true);
+    }, 1000);
+}
+async function keepAwake(on){
+    try {
+        if (on && 'wakeLock' in navigator && !_wake) { _wake = await navigator.wakeLock.request('screen'); _wake.addEventListener('release', () => { _wake = null; }); }
+        if (!on && _wake) { await _wake.release(); _wake = null; }
+    } catch (_) { _wake = null; }
+}
+function startTidy(){
+    const r = getRoom(ui.tidyRoom);
+    if (!r) return;
+    // l'audio va "sbloccato" con un tocco, così il segnale finale può suonare
+    try { _audio = _audio || new (window.AudioContext || window.webkitAudioContext)(); _audio.resume(); } catch (_) {}
+    const total = settings().tidyMin * 60;
+    ui.timer = { roomId:r.id, roomName:r.name, total, endAt:Date.now() + total * 1000, left:total };
+    saveUi(); keepAwake(true); render();
+}
+function pauseTidy(){
+    if (!ui.timer || !ui.timer.endAt) return;
+    ui.timer.left = timerLeft(); ui.timer.endAt = null;
+    saveUi(); keepAwake(false); clearInterval(_tick); render();
+}
+function resumeTidy(){
+    if (!ui.timer || ui.timer.endAt) return;
+    ui.timer.endAt = Date.now() + ui.timer.left * 1000;
+    saveUi(); keepAwake(true); render();
+}
+function cancelTidy(){
+    confirmDialog({ title:'Annullare?', msg:'Il giro di riordino non verrà salvato.', ok:'Annulla il giro' }, () => {
+        ui.timer = null; saveUi(); clearInterval(_tick); keepAwake(false); render();
+    });
+}
+function chime(){
+    try {
+        const ctx = _audio || new (window.AudioContext || window.webkitAudioContext)();
+        ctx.resume();
+        [659.25, 783.99, 1046.5].forEach((f, i) => {
+            const o = ctx.createOscillator(), g = ctx.createGain(), t0 = ctx.currentTime + i * 0.22;
+            o.type = 'sine'; o.frequency.value = f;
+            g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.6);
+            o.connect(g).connect(ctx.destination); o.start(t0); o.stop(t0 + 0.65);
+        });
+    } catch (_) {}
+    try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (_) {}
+}
+// auto = il tempo è scaduto; altrimenti "Ho finito" (conta i minuti fatti davvero)
+function finishTidy(auto, silent){
+    const tm = ui.timer;
+    if (!tm) return;
+    clearInterval(_tick);
+    const elapsed = auto ? tm.total : tm.total - timerLeft();
+    const minutes = clamp(Math.round(elapsed / 60), 1, 180);
+    const st = settings();
+    const full = tm.total / 60;
+    const cost = qr(st.tidyCost * Math.min(1, minutes / full)) || (st.tidyCost ? 0.25 : 0);
+    const room = getRoom(tm.roomId);
+    // la data è quella in cui il giro è finito (anche se l'app era chiusa)
+    const endDate = auto && tm.endAt ? localDateStr(new Date(Math.min(tm.endAt, Date.now()))) : todayStr();
+    const rec = { id:uid(), date:endDate, roomId:tm.roomId, roomName:room ? room.name : tm.roomName, minutes, cost };
+    data.tidy.push(rec);
+    ui.timer = null; saveUi(); keepAwake(false);
+    if (auto && !silent) chime();
+    save(); render();
+    showToast(`✨ ${minutes} minuti in ${(rec.roomName || 'casa').toLowerCase()}. Ben fatto!`, { label:'Annulla', fn:() => {
+        data.tidy = data.tidy.filter(x => x.id !== rec.id); save(); render();
+    } });
+}
+function deleteTidy(id){
+    data.tidy = data.tidy.filter(x => x.id !== id);
+    save(); render();
+}
+// All'avvio o al ritorno nell'app: se il tempo è finito mentre eri altrove, salva il giro
+function resumeTimerState(){
+    if (!ui.timer || !ui.timer.endAt) return;
+    if (timerLeft() <= 0) finishTidy(true, true); // eri altrove: niente suono, solo il salvataggio
+    else { startTick(); keepAwake(true); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2148,6 +2650,7 @@ document.addEventListener('focusout', flushPendingRender);
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
     if (_renderDay !== todayStr()) { renderWhenIdle(); setTimeout(maybeCheckin, 300); } // è passata la mezzanotte
+    resumeTimerState();
     if (syncUrl && !syncInProgress && Date.now() - lastSyncAt > 60000) doSync(true);
 });
 window.addEventListener('online', () => { if (syncUrl) doSync(true); });
@@ -2164,6 +2667,7 @@ function init(){
         m.addEventListener('click', e => { if (e.target === m && downOnBackdrop) closeModal(m.id); });
     });
     render();
+    resumeTimerState();
     updateSyncBtn(getSyncStatus());
     if (_loadError) showToast('⚠ Dati locali illeggibili: copia salvata, ripristina da sync o backup');
     // Il check-in parte dopo la prima sync, così non lo rifai se l'hai già fatto sull'altro dispositivo
