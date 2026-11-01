@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  CASA HUB — app.js (v1.5)
+//  CASA HUB — app.js (v1.6)
 //  Impegni di casa (urgenza, categorie, ricorrenze, rinvii), energie con la
-//  teoria dei cucchiaini, lista della spesa
+//  teoria dei cucchiaini, lista della spesa (con negozi e liste da WhatsApp),
+//  stanze con icone e ispirazioni da Pinterest
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── Costanti ────────────────────────────────────────────────────────────────
@@ -130,6 +131,56 @@ const DEFAULT_SHOP = [
     ['pulizia', 'Casa e pulizia', ['Detersivo piatti','Detersivo lavatrice','Carta igienica','Carta da cucina','Sacchi spazzatura','Spugne']],
     ['igiene', 'Igiene personale', ['Shampoo','Bagnoschiuma','Dentifricio','Deodorante']],
 ];
+// Negozi della spesa: salvati dentro le impostazioni (record 'main'), così anche
+// una versione vecchia dell'app su un altro dispositivo li conserva in sync.
+const DEFAULT_SHOPS = [['super', 'Supermercato'], ['farmacia', 'Farmacia'], ['casalinghi', 'Casalinghi']];
+function defaultShops(){ return DEFAULT_SHOPS.map(([k, name], i) => ({ id:'d_shop_' + k, name, color:CAT_COLORS[(i * 3) % CAT_COLORS.length], order:i })); }
+
+// Icone delle stanze: tratto morbido come le icone della barra in basso.
+// Ogni icona ha il suo pastello (indice in CAT_COLORS).
+const ROOM_ICONS = {
+    house:{ n:'Casa', c:4, p:'<path d="M3.5 11L12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5h4v5"/>' },
+    pot:{ n:'Cucina', c:4, p:'<path d="M5 10.5h14v5.5a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4z"/><path d="M2.8 11.5H5M19 11.5h2.2"/><path d="M9 7.6c-.6-.9.6-1.6 0-2.6M12 7.6c-.6-.9.6-1.6 0-2.6M15 7.6c-.6-.9.6-1.6 0-2.6"/>' },
+    bath:{ n:'Bagno', c:1, p:'<path d="M3 12h18v1.5a5.5 5.5 0 0 1-5.5 5.5h-7A5.5 5.5 0 0 1 3 13.5z"/><path d="M6 12V6.2a2.2 2.2 0 0 1 4.2-.9"/><path d="M9 6.5h2.6"/><path d="M7 19l-1.2 1.8M17 19l1.2 1.8"/>' },
+    sofa:{ n:'Soggiorno', c:3, p:'<path d="M5 11V8.5A2.5 2.5 0 0 1 7.5 6h9A2.5 2.5 0 0 1 19 8.5V11"/><path d="M3 18v-5a2 2 0 0 1 4 0v1.5h10V13a2 2 0 0 1 4 0v5z"/><path d="M5.5 18v1.8M18.5 18v1.8"/>' },
+    bed:{ n:'Camera', c:6, p:'<path d="M3 6v13.5M21 13.5v6"/><path d="M3 16.5h18v-3a2.5 2.5 0 0 0-2.5-2.5H10v5.5"/><path d="M5 13.4a1.8 1.8 0 1 0 3.6 0 1.8 1.8 0 1 0-3.6 0"/>' },
+    teddy:{ n:'Cameretta', c:2, p:'<circle cx="12" cy="13.5" r="6"/><circle cx="6.8" cy="7.6" r="2.2"/><circle cx="17.2" cy="7.6" r="2.2"/><path d="M10.6 15.6c.8.7 2 .7 2.8 0"/><path d="M9.7 12.2h.01M14.3 12.2h.01" stroke-width="2.4"/>' },
+    door:{ n:'Ingresso', c:0, p:'<path d="M6 21V4.5A1.5 1.5 0 0 1 7.5 3h9A1.5 1.5 0 0 1 18 4.5V21"/><path d="M3.5 21h17"/><path d="M14.6 12.5h.01" stroke-width="2.6"/>' },
+    desk:{ n:'Studio', c:1, p:'<path d="M3 14h18M5 14v6.5M19 14v6.5"/><rect x="7" y="4" width="10" height="7" rx="1.2"/><path d="M12 11v3"/>' },
+    plant:{ n:'Balcone', c:0, p:'<path d="M7 14h10l-1.3 6a1.2 1.2 0 0 1-1.2 1H9.5a1.2 1.2 0 0 1-1.2-1z"/><path d="M12 14V8.5"/><path d="M12 10.5C8.6 10.5 7 8.6 7 5.5c3.4 0 5 1.9 5 5z"/><path d="M12 9.5c0-2.9 1.5-4.5 4.6-4.5 0 2.9-1.6 4.5-4.6 4.5z"/>' },
+    washer:{ n:'Lavanderia', c:5, p:'<rect x="4.5" y="3" width="15" height="18" rx="2.5"/><path d="M4.5 7.5h15M7.5 5.3h2"/><circle cx="12" cy="14" r="4"/><path d="M9.8 14.6c1.3-.9 3-.9 4.4 0"/>' },
+    table:{ n:'Sala da pranzo', c:4, p:'<circle cx="12" cy="12.5" r="5"/><circle cx="12" cy="12.5" r="2.4"/><path d="M3.5 4.5v4a1.5 1.5 0 0 0 3 0v-4M5 10v9.5"/><path d="M20.5 4.5c-1.6 0-2.6 2-2.6 4.6v2.9h2.6v7.5"/>' },
+    wardrobe:{ n:'Armadio', c:7, p:'<rect x="5" y="3" width="14" height="17" rx="1.5"/><path d="M12 3v17M10 10.5v2M14 10.5v2M6.5 20v1.5M17.5 20v1.5"/>' },
+    books:{ n:'Libreria', c:2, p:'<path d="M5 4h3v16H5zM9.5 6h3v14h-3z"/><path d="M14.3 6.4l2.9-.8 3.4 13.6-2.9.8z"/><path d="M3 20h18"/>' },
+    tv:{ n:'TV', c:6, p:'<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8.5 21h7M12 17v4"/>' },
+    broom:{ n:'Ripostiglio', c:7, p:'<path d="M17.5 2.5l-5.2 8.6"/><path d="M10.4 10l4.2 2.5-1.2 2.4c-1.3 2.4-3.6 4.4-7.4 5.6.3-3.4 1.7-6.6 4.4-10.5z"/><path d="M8.6 15.4l2.2 1.3"/>' },
+    box:{ n:'Cantina', c:7, p:'<path d="M4 8l8-4 8 4v9l-8 4-8-4z"/><path d="M4 8l8 4 8-4M12 12v9"/>' },
+    stairs:{ n:'Scale', c:5, p:'<path d="M3.5 20.5h4.5v-4h4v-4h4v-4h4.5"/><path d="M20.5 4v4.5"/>' },
+    car:{ n:'Garage', c:1, p:'<path d="M5.2 11l1.4-3.9A1.6 1.6 0 0 1 8.1 6h7.8a1.6 1.6 0 0 1 1.5 1.1l1.4 3.9"/><rect x="3.5" y="11" width="17" height="6.5" rx="2.2"/><path d="M6 17.5v2M18 17.5v2"/><path d="M7.2 14.2h.01M16.8 14.2h.01" stroke-width="2.6"/>' },
+    paw:{ n:'Animali', c:3, p:'<path d="M12 12.3c2.4 0 4.6 2.6 4.6 4.8 0 1.6-1.3 2.4-2.6 2.4-.9 0-1.3-.4-2-.4s-1.1.4-2 .4c-1.3 0-2.6-.8-2.6-2.4 0-2.2 2.2-4.8 4.6-4.8z"/><circle cx="6.6" cy="10.4" r="1.7"/><circle cx="9.9" cy="6.4" r="1.7"/><circle cx="14.1" cy="6.4" r="1.7"/><circle cx="17.4" cy="10.4" r="1.7"/>' },
+    heart:{ n:'Angolo relax', c:3, p:'<path d="M12 20s-7.5-4.6-7.5-10.2A4.2 4.2 0 0 1 12 7.3a4.2 4.2 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z"/>' },
+};
+// Icona proposta in base al nome, finché non ne scegli una tu
+const ROOM_ICON_GUESS = [
+    [/camerett|bimb|bambin|neonat|nursery/, 'teddy'], [/cucin|cottura|kitchen/, 'pot'], [/bagn|toilet|\bwc\b|servizi|lavand(ino)?$/, 'bath'],
+    [/pranzo|tinello|tavolo/, 'table'], [/soggiorn|salott|living|\bsala\b|divano/, 'sofa'], [/camer|letto|matrimonial|notte/, 'bed'],
+    [/ingress|corridoi|entrata|androne/, 'door'], [/studio|ufficio|scrivani/, 'desk'], [/balcon|terrazz|giardin|veranda|orto|piante/, 'plant'],
+    [/lavanderi|bucato|lavatric/, 'washer'], [/armadi|cabina|guardarob/, 'wardrobe'], [/librer|bibliot|libri/, 'books'],
+    [/ripostigl|sgabuzzin|pulizi/, 'broom'], [/garage|\bbox\b|auto|moto/, 'car'], [/cantin|soffitt|mansard|deposit|scatol|trasloc/, 'box'],
+    [/scal/, 'stairs'], [/\btv\b|tavern|cinema/, 'tv'], [/animal|\bcane\b|gatt|cuccia|lettiera/, 'paw'], [/relax|lettura|angolo/, 'heart'],
+];
+function guessRoomIcon(name){
+    const n = normName(name);
+    const hit = ROOM_ICON_GUESS.find(([re]) => re.test(n));
+    return hit ? hit[1] : 'house';
+}
+function roomIconKey(r){ return r && ROOM_ICONS[r.icon] ? r.icon : guessRoomIcon(r ? r.name : ''); }
+function roomIconSvg(key, cls){
+    const ic = ROOM_ICONS[key] || ROOM_ICONS.house;
+    return `<span class="ricon ${cls || ''}" style="--ic:${CAT_COLORS[ic.c % CAT_COLORS.length]}"><svg viewBox="0 0 24 24" aria-hidden="true">${ic.p}</svg></span>`;
+}
+function roomIconHtml(r, cls){ return roomIconSvg(roomIconKey(r), cls); }
+
 function emptyData(){ return { v:1, tasks:[], taskCats:[], shopCats:[], shopItems:[], days:[], fixedCosts:[], settings:[], rooms:[], projects:[], tidy:[], fridge:[], fridgeLog:[], photos:[], deleted:{}, lastModified:0 }; }
 function seedDefaults(d){
     d.taskCats = DEFAULT_TASK_CATS.map(([k, name, subs], i) => ({
@@ -218,6 +269,7 @@ function normalizeData(d){
         it.need = !!it.need;
         it.qty = typeof it.qty === 'string' ? it.qty : '';
         it.catId = it.catId ? String(it.catId) : null;
+        it.shops = Array.isArray(it.shops) ? [...new Set(it.shops.filter(Boolean).map(String))] : [];
     });
     // ── Energie ──
     if (migrateFixed && !d.fixedCosts.length) d.fixedCosts = defaultFixed();
@@ -241,6 +293,14 @@ function normalizeData(d){
     st.fridgeDays = st.fridgeDays === undefined ? 1 : clamp(parseInt(st.fridgeDays, 10) || 0, 0, 7); // giorni di anticipo
     st.fridgeHour = clamp(parseInt(st.fridgeHour, 10) || 8, 5, 22);
     st.fridgeChannel = ['calendar','email','both'].includes(st.fridgeChannel) ? st.fridgeChannel : 'calendar';
+    // Negozi (v1.6): [{ id, name, color, order }] + negozio principale
+    if (!Array.isArray(st.shops)) st.shops = defaultShops();
+    const seenShop = new Set();
+    st.shops = st.shops.filter(x => x && x.id && !seenShop.has(String(x.id)) && seenShop.add(String(x.id))).map((x, i) => ({
+        id:String(x.id), name:String(x.name || '').trim().slice(0, 40) || 'Negozio',
+        color:/^#[0-9a-f]{6}$/i.test(x.color) ? x.color : CAT_COLORS[i % CAT_COLORS.length],
+        order:typeof x.order === 'number' ? x.order : i }));
+    if (!st.shops.some(x => x.id === st.mainShop)) st.mainShop = st.shops.length ? [...st.shops].sort((a, b) => a.order - b.order)[0].id : null;
     // ── Frigo ──
     d.fridge = d.fridge.filter(x => x && x.name);
     d.fridge.forEach(x => {
@@ -280,6 +340,9 @@ function normalizeData(d){
         r.name = String(r.name || '').trim() || 'Stanza';
         if (typeof r.order !== 'number') r.order = i;
         r.notes = typeof r.notes === 'string' ? r.notes : '';
+        r.icon = ROOM_ICONS[r.icon] ? r.icon : null;   // null = proposta dal nome
+        r.pins = Array.isArray(r.pins) ? r.pins.filter(x => x && typeof x.url === 'string' && /^https:\/\/[^\s]+$/i.test(x.url))
+            .map(x => ({ id:String(x.id || uid()), url:x.url.slice(0, 600), title:String(x.title || '').slice(0, 80) })) : [];
     });
     const roomIds = new Set(d.rooms.map(r => r.id));
     d.photos = d.photos.filter(ph => ph.roomId && roomIds.has(String(ph.roomId)));
@@ -345,6 +408,8 @@ function loadUi(){
         section: u.section === 'projects' ? 'rooms' : SECTIONS.includes(u.section) ? u.section : 'tasks',
         view: VIEWS.includes(u.view) ? u.view : 'today',
         shopFilter: u.shopFilter === 'need' ? 'need' : 'all',
+        shopId: typeof u.shopId === 'string' ? u.shopId : null,   // negozio scelto nel filtro (null = tutti)
+        pinPreview: u.pinPreview !== false,
         collapsed: (u.collapsed && typeof u.collapsed === 'object') ? u.collapsed : {},
         showDone: !!u.showDone,
         lastShopCat: u.lastShopCat || null,
@@ -1376,6 +1441,7 @@ function proposeSpoons(ans, debt){
 let ci = null;
 function isFirstCheckin(){ return !data.days.some(d => typeof d.spoons === 'number'); }
 function maybeCheckin(){
+    if (document.querySelector('#modalImport:not(.hidden), #modalPin:not(.hidden)')) { setTimeout(maybeCheckin, 4000); return; }
     if (!spoonsOn()) return;
     const today = todayStr();
     if (hasCheckin(today) || ui.checkinSkip === today || anyModalOpen()) return;
@@ -1723,6 +1789,7 @@ function renderRoomsBody(){
     $('roomsBody').innerHTML = rooms.map((r, i) => {
         const a = jsArg(r.id);
         return `<div class="mg-cat"><div class="mg-row">
+            <button class="mg-icon" onclick="openRoomIcon(${a})" aria-label="Cambia icona">${roomIconHtml(r, 'sm')}</button>
             <input type="text" value="${escHtml(r.name)}" maxlength="40" onchange="renameRoom(${a},this.value)" aria-label="Nome stanza">
             <button class="mg-btn" onclick="moveRoom(${a},-1)" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su">▲</button>
             <button class="mg-btn" onclick="moveRoom(${a},1)" ${i === rooms.length - 1 ? 'disabled' : ''} aria-label="Sposta giù">▼</button>
@@ -1737,10 +1804,33 @@ function addRoom(){
     const name = $('newRoom').value.trim();
     if (!name) return;
     const maxO = data.rooms.reduce((m, r) => Math.max(m, r.order), -1);
-    data.rooms.push({ id:uid(), name, order:maxO + 1, notes:'' });
+    data.rooms.push({ id:uid(), name, order:maxO + 1, notes:'', icon:null, pins:[] });
     roomsChanged();
 }
-function renameRoom(id, v){ const r = getRoom(id); v = String(v).trim(); if (r && v) { r.name = v; save(); _pendingRender = true; } }
+// Rinominando una stanza con l'icona automatica, l'icona segue il nome nuovo
+function renameRoom(id, v){ const r = getRoom(id); v = String(v).trim(); if (r && v) { r.name = v; save(); _pendingRender = true; if (!r.icon && $('roomsBody')) renderRoomsBody(); } }
+
+// ── Icona della stanza ──────────────────────────────────────────────────────
+let iconRoomId = null;
+function openRoomIcon(id){
+    const r = getRoom(id);
+    if (!r) return;
+    iconRoomId = id;
+    const cur = r.icon, guess = guessRoomIcon(r.name);
+    $('roomIconBody').innerHTML = `<div class="modal-title">Icona di “${escHtml(r.name)}”</div>
+        <div class="icon-grid">${Object.keys(ROOM_ICONS).map(k => `<button class="icon-pick${cur === k ? ' on' : ''}" onclick="setRoomIcon(${jsArg(k)})">${roomIconSvg(k)}<span>${escHtml(ROOM_ICONS[k].n)}</span></button>`).join('')}</div>
+        <button class="btn btn-secondary${cur ? '' : ' is-on'}" onclick="setRoomIcon(null)">${cur ? 'Torna a quella automatica' : 'Automatica, dal nome'} ${roomIconSvg(guess, 'xs')}</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalRoomIcon')">Chiudi</button>`;
+    openModal('modalRoomIcon');
+}
+function setRoomIcon(k){
+    const r = getRoom(iconRoomId);
+    if (!r) return;
+    r.icon = k && ROOM_ICONS[k] ? k : null;
+    save(); closeModal('modalRoomIcon');
+    if (!$('modalRooms').classList.contains('hidden')) renderRoomsBody();
+    _pendingRender = true; flushPendingRender();
+}
 function moveRoom(id, dir){
     const rooms = sortedRooms(), i = rooms.findIndex(r => r.id === id), j = i + dir;
     if (i < 0 || j < 0 || j >= rooms.length) return;
@@ -1798,9 +1888,9 @@ function renderRooms(app){
             const st = roomStats(x.id), cover = roomCover(x.id), nph = roomPhotos(x.id).length;
             const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
             return `<div class="room-tile" onclick="openRoom(${jsArg(x.id)})">
-                <div class="room-cover">${cover ? photoMediaHtml(cover, 'thumb') : `<span class="room-cover-empty">${escHtml(x.name.charAt(0).toUpperCase())}</span>`}</div>
+                <div class="room-cover${cover ? '' : ' no-photo'}" style="--ic:${CAT_COLORS[(ROOM_ICONS[roomIconKey(x)] || ROOM_ICONS.house).c % CAT_COLORS.length]}">${cover ? photoMediaHtml(cover, 'thumb') + roomIconHtml(x, 'badge') : roomIconHtml(x, 'big')}</div>
                 <div class="room-info"><div class="room-tname">${escHtml(x.name)}</div>
-                    <div class="room-tmeta">${st.open ? `${st.open} da fare` : st.total ? 'tutto fatto ✓' : 'niente in lista'}${nph ? ` · ${nph} foto` : ''}</div>
+                    <div class="room-tmeta">${st.open ? `${st.open} da fare` : st.total ? 'tutto fatto ✓' : 'niente in lista'}${nph ? ` · ${nph} foto` : ''}${x.pins.length ? ` · ${x.pins.length} ${x.pins.length === 1 ? 'ispirazione' : 'ispirazioni'}` : ''}</div>
                     ${st.total ? `<div class="progress"><span style="width:${pct}%"></span></div>` : ''}</div></div>`;
         }).join('') || `<div class="empty-note">Nessuna stanza. Tocca “Modifica” per aggiungerne.</div>`}</div>`;
     hydratePhotos(app);
@@ -1837,14 +1927,15 @@ function renderRoomDetail(app, r){
     const cnt = k => k === 'all' ? photos.length : photos.filter(p => p.kind === k).length;
     app.innerHTML = `
         <button class="link-btn back" onclick="closeRoom()">‹ Stanze</button>
-        <div class="sec-head" style="margin-top:4px;"><div><div class="sec-title">${escHtml(r.name)} ${helpBtn('room')}</div>
-            <div class="sec-sub">${st.total ? `${st.done} di ${st.total} fatte${st.left && spoonsOn() ? ` · mancano ${fmtSp(st.left)} cucchiaini` : ''}` : 'Aggiungi foto e cose da fare'}</div></div></div>
+        <div class="sec-head" style="margin-top:4px;"><div class="room-head"><button class="room-head-icon" onclick="openRoomIcon(${a})" aria-label="Cambia icona">${roomIconHtml(r, 'md')}</button><div><div class="sec-title">${escHtml(r.name)} ${helpBtn('room')}</div>
+            <div class="sec-sub">${st.total ? `${st.done} di ${st.total} fatte${st.left && spoonsOn() ? ` · mancano ${fmtSp(st.left)} cucchiaini` : ''}` : 'Aggiungi foto e cose da fare'}</div></div></div></div>
         <div class="block card">
             <div class="block-title"><span>Foto</span><button class="add-btn" onclick="pickPhoto()">+ Foto</button></div>
             ${photos.length ? `<div class="chip-row">${['all','now','goal','idea'].map(k => `<button class="chip${filt === k ? ' on' : ''}" onclick="ui.photoFilter='${k}';saveUi();render()">${k === 'all' ? 'Tutte' : PHOTO_KINDS[k]} · ${cnt(k)}</button>`).join('')}</div>
                 <div class="photo-grid">${shown.map(photoTileHtml).join('') || `<div class="empty-note">Nessuna foto di questo tipo.</div>`}</div>`
                 : `<div class="empty-note">Fotografa com’è adesso e aggiungi immagini di come la vorresti. Sopra puoi scrivere e disegnare, anche con la pennina.</div>`}
         </div>
+        ${pinsBlockHtml(r)}
         <div class="block card">
             <div class="block-title"><span>Da fare</span><span class="count">${open.length || ''}</span></div>
             ${open.map((t, i) => stepRowHtml(t, i, open.length)).join('') || `<div class="empty-note">Niente in lista.</div>`}
@@ -1859,6 +1950,7 @@ function renderRoomDetail(app, r){
         <div class="block card"><div class="block-title"><span>Note</span></div>
             <textarea id="roomNotes" placeholder="Come la vorresti? Misure, colori, idee…" onchange="saveRoomNotes(${a},this.value)">${escHtml(r.notes)}</textarea></div>`;
     hydratePhotos(app);
+    buildPinEmbeds();
 }
 function addRoomTask(){
     const inp = $('stepTitle'), title = inp ? inp.value.trim() : '';
@@ -1889,6 +1981,167 @@ function clearRoomDone(roomId){
     });
 }
 function saveRoomNotes(id, v){ const r = getRoom(id); if (r) { r.notes = String(v); save(); } }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ISPIRAZIONI: bacheche e Pin di Pinterest (o altri link) per ogni stanza
+// ═══════════════════════════════════════════════════════════════════════════
+const PIN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#e60023"/><path fill="#fff" d="M12.3 5.5c-3.8 0-5.8 2.6-5.8 4.9 0 1.4.5 2.6 1.6 3 .2.1.3 0 .4-.2l.2-.6c0-.2 0-.3-.1-.5-.3-.4-.6-.9-.6-1.7 0-2.1 1.6-4 4.2-4 2.3 0 3.5 1.4 3.5 3.2 0 2.4-1.1 4.5-2.7 4.5-.9 0-1.5-.7-1.3-1.6.3-1 .7-2.2.7-2.9 0-.7-.4-1.2-1.1-1.2-.9 0-1.6.9-1.6 2.2 0 .8.3 1.3.3 1.3l-1.1 4.6c-.3 1.4 0 3 0 3.2 0 .1.1.1.2 0 .1-.1 1.1-1.4 1.4-2.6l.6-2.2c.3.5 1.1 1 2 1 2.6 0 4.3-2.4 4.3-5.5 0-2.4-2-4.6-5.1-4.6z"/></svg>';
+const LINK_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--accent-dim)"/><path d="M10.5 13.5l3-3M9.2 11.2l-1.4 1.4a2.5 2.5 0 0 0 3.6 3.6l1.4-1.4M14.8 12.8l1.4-1.4a2.5 2.5 0 0 0-3.6-3.6l-1.4 1.4" fill="none" stroke="var(--accent-ink)" stroke-width="1.6" stroke-linecap="round"/></svg>';
+// Prende il primo link da un testo condiviso ("Guarda questo Pin… https://pin.it/abc")
+function extractUrl(text){
+    const m = String(text || '').match(/https?:\/\/[^\s<>"']+/i) || String(text || '').match(/\b(?:pin\.it|(?:[a-z]{2,3}\.)?pinterest\.[a-z.]{2,8})\/[^\s<>"']+/i);
+    if (!m) return '';
+    let u = m[0].replace(/[).,;!?]+$/, '');
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+    return u.replace(/^http:\/\//i, 'https://');
+}
+function isPinterestUrl(u){ return /^https:\/\/(?:[a-z0-9-]+\.)*(?:pinterest\.[a-z.]{2,8}|pin\.it)\//i.test(u); }
+// board | pin | short | profile | other — l'anteprima funziona solo con bacheche e Pin col link completo
+function pinInfo(url){
+    let u;
+    try { u = new URL(url); } catch (_) { return { kind:'other', label:'Link', host:'' }; }
+    const host = u.hostname.replace(/^www\./, '');
+    if (!isPinterestUrl(url)) return { kind:'other', label:host, host };
+    if (/^pin\.it$/i.test(host)) return { kind:'short', label:'Link breve di Pinterest', host };
+    const seg = u.pathname.split('/').filter(Boolean).map(x => { try { return decodeURIComponent(x); } catch (_) { return x; } });
+    if (seg[0] === 'pin' && /^\d+$/.test(seg[1] || '')) return { kind:'pin', label:'Pin', host, embed:`https://www.pinterest.com/pin/${seg[1]}/` };
+    const reserved = ['pin','search','ideas','today','explore','_','categories','topics','settings','business'];
+    if (seg.length >= 2 && !reserved.includes(seg[0])) {
+        const name = seg[1].replace(/[-_]+/g, ' ').trim();
+        return { kind:'board', label:'Bacheca', host, name:name.charAt(0).toUpperCase() + name.slice(1),
+            embed:`https://www.pinterest.com/${encodeURIComponent(seg[0])}/${encodeURIComponent(seg[1])}/${seg[2] && !['pins','more_ideas'].includes(seg[2]) ? encodeURIComponent(seg[2]) + '/' : ''}` };
+    }
+    if (seg.length === 1 && !reserved.includes(seg[0])) return { kind:'profile', label:'Profilo', host, name:seg[0] };
+    return { kind:'other', label:'Pinterest', host };
+}
+function pinTitle(p){ const inf = pinInfo(p.url); return p.title || inf.name || (inf.kind === 'pin' ? 'Un Pin' : inf.kind === 'short' ? 'Ispirazione da Pinterest' : inf.host || 'Link'); }
+function pinsBlockHtml(r){
+    const a = jsArg(r.id), w = Math.max(220, Math.min(560, (document.documentElement.clientWidth || 380) - 72));
+    const canPreview = r.pins.some(p => pinInfo(p.url).embed);
+    return `<div class="block card">
+        <div class="block-title"><span>Ispirazioni</span><button class="add-btn" onclick="openPinModal(null,${a})">+ Pinterest</button></div>
+        ${r.pins.length ? r.pins.map(p => {
+            const inf = pinInfo(p.url), pa = jsArg(p.id);
+            const embed = ui.pinPreview && inf.embed
+                ? `<div class="pin-embed">${inf.kind === 'board'
+                    ? `<a data-pin-do="embedBoard" data-pin-board-width="${w}" data-pin-scale-height="${Math.round(w * 0.62)}" data-pin-scale-width="80" href="${escHtml(inf.embed)}">Anteprima non disponibile adesso: apri la bacheca.</a>`
+                    : `<a data-pin-do="embedPin" data-pin-width="medium" href="${escHtml(inf.embed)}">Anteprima non disponibile adesso: apri il Pin.</a>`}</div>` : '';
+            return `<div class="pin-card">
+                <div class="pin-head">
+                    <span class="pin-logo">${inf.host && isPinterestUrl(p.url) ? PIN_SVG : LINK_SVG}</span>
+                    <div class="pin-txt"><b>${escHtml(pinTitle(p))}</b><small>${escHtml(inf.label)}${inf.kind === 'short' && ui.pinPreview ? ', senza anteprima' : ''}</small></div>
+                    <a class="add-btn" href="${escHtml(p.url)}" target="_blank" rel="noopener">Apri</a>
+                    <button class="shop-edit" onclick="openPinModal(${pa},${a})" aria-label="Modifica">⋯</button>
+                </div>${embed}</div>`;
+        }).join('') + (canPreview ? `<button class="link-btn pin-toggle" onclick="ui.pinPreview=!ui.pinPreview;saveUi();render()">${ui.pinPreview ? 'Nascondi le anteprime' : 'Mostra le anteprime'}</button>` : '')
+        : `<div class="empty-note">Collega le bacheche di Pinterest con le idee per questa stanza: le apri con un tocco e, se sono pubbliche, le vedi anche qui. Dall’app Pinterest puoi anche <b>condividere</b> una bacheca o un Pin direttamente a Casa Hub.</div>`}
+    </div>`;
+}
+// Script ufficiale di Pinterest per le anteprime: caricato solo se servono
+let _pinJs = null;
+function loadPinterest(){
+    if (_pinJs) return _pinJs;
+    _pinJs = new Promise((res, rej) => {
+        const sc = document.createElement('script');
+        sc.async = true; sc.src = 'https://assets.pinterest.com/js/pinit.js';
+        sc.setAttribute('data-pin-build', 'casaPinBuild');
+        sc.onload = res;
+        sc.onerror = () => { _pinJs = null; sc.remove(); rej(new Error('pinit')); };
+        document.head.appendChild(sc);
+    });
+    return _pinJs;
+}
+function buildPinEmbeds(){
+    if (!ui.pinPreview || !navigator.onLine || !document.querySelector('a[data-pin-do]')) return;
+    loadPinterest().then(() => {
+        if (typeof window.casaPinBuild === 'function') window.casaPinBuild();
+        else if (window.PinUtils && typeof window.PinUtils.build === 'function') window.PinUtils.build();
+    }).catch(() => {});
+}
+
+let editingPin = null; // { roomId, pinId }
+function openPinModal(pinId, roomId, preset){
+    const r = getRoom(roomId);
+    const p = r && pinId ? r.pins.find(x => x.id === pinId) : null;
+    editingPin = { roomId:r ? r.id : null, pinId:p ? p.id : null };
+    $('pinUrl').value = p ? p.url : (preset && preset.url) || '';
+    $('pinTitle').value = p ? p.title : (preset && preset.title) || '';
+    const rooms = sortedRooms();
+    let pre = r;
+    if (!pre && preset) {
+        const hay = normName(`${preset.title || ''} ${pinInfo(preset.url).name || ''}`);
+        pre = rooms.find(x => hay.includes(normName(x.name))) || rooms.find(x => { const w = normName(x.name).split(/\s+/)[0]; return w.length >= 4 && hay.includes(w); }) || null;
+    }
+    $('pinRoom').innerHTML = (r ? '' : `<option value=""${pre ? '' : ' selected'}>In quale stanza?</option>`) + rooms.map(x => `<option value="${escHtml(x.id)}"${pre && x.id === pre.id ? ' selected' : ''}>${escHtml(x.name)}</option>`).join('');
+    $('pinRoomWrap').classList.toggle('hidden', !!r && !p && !preset); // modificando puoi spostarla in un'altra stanza
+    $('pinModalTitle').textContent = p ? 'Ispirazione' : preset ? 'Salva in una stanza' : 'Nuova ispirazione';
+    $('pinDelete').classList.toggle('hidden', !p);
+    updatePinHint();
+    openModal('modalPin');
+}
+function updatePinHint(){
+    const u = extractUrl($('pinUrl').value), inf = u ? pinInfo(u) : null;
+    $('pinHint').textContent = !u ? 'Su Pinterest: apri la bacheca, tocca Condividi → Copia link e incollalo qui.'
+        : inf.kind === 'board' ? `Bacheca “${inf.name}”: se è pubblica la vedi in anteprima.`
+        : inf.kind === 'pin' ? 'Un Pin: lo vedi in anteprima.'
+        : inf.kind === 'short' ? 'Link breve: si apre nell’app Pinterest. Per l’anteprima serve il link completo della bacheca (dal browser).'
+        : inf.kind === 'profile' ? 'Profilo Pinterest: si apre con un tocco.'
+        : 'Link salvato: si apre con un tocco.';
+}
+function savePin(){
+    const url = extractUrl($('pinUrl').value);
+    if (!url) { showToast('⚠ Incolla un link (https://…)'); return; }
+    const roomId = $('pinRoom').value || editingPin.roomId;
+    const r = getRoom(roomId);
+    if (!r) { showToast('⚠ Scegli la stanza'); return; }
+    const title = $('pinTitle').value.trim().slice(0, 80);
+    const old = editingPin.roomId ? getRoom(editingPin.roomId) : null;
+    let p = old && editingPin.pinId ? old.pins.find(x => x.id === editingPin.pinId) : null;
+    if (p && old !== r) { old.pins = old.pins.filter(x => x !== p); r.pins.push(p); }  // spostato in un'altra stanza
+    if (!p) {
+        if (r.pins.some(x => x.url === url)) { showToast('Questo link c’è già'); closeModal('modalPin'); return; }
+        p = { id:uid() }; r.pins.push(p);
+    }
+    p.url = url; p.title = title;
+    save(); closeModal('modalPin');
+    if (ui.section !== 'rooms' || ui.roomId !== r.id) { ui.section = 'rooms'; ui.roomId = r.id; saveUi(); window.scrollTo(0, 0); }
+    render();
+}
+function deletePin(){
+    const r = getRoom(editingPin && editingPin.roomId);
+    const p = r && r.pins.find(x => x.id === editingPin.pinId);
+    if (!p) return;
+    confirmDialog({ title:'Togliere?', msg:`“${pinTitle(p)}” non sarà più collegata a ${r.name}. Su Pinterest non cambia nulla.`, ok:'Togli' }, () => {
+        r.pins = r.pins.filter(x => x !== p);
+        save(); closeModal('modalPin'); render();
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CONDIVIDI A CASA HUB (menu Condividi di Android, app installata)
+//  WhatsApp → lista della spesa; Pinterest → ispirazione di una stanza
+// ═══════════════════════════════════════════════════════════════════════════
+function readSharedParams(){
+    const q = new URLSearchParams(location.search);
+    if (!q.has('text') && !q.has('url') && !q.has('title')) return null;
+    const shared = { title:(q.get('title') || '').trim(), text:(q.get('text') || '').trim(), url:(q.get('url') || '').trim() };
+    // Pulisce l'indirizzo: ricaricando la pagina non si rimporta la stessa lista
+    try { history.replaceState(null, '', location.pathname + location.hash); } catch (_) {}
+    return (shared.title || shared.text || shared.url) ? shared : null;
+}
+function handleShared(sh){
+    const all = [sh.url, sh.text, sh.title].filter(Boolean).join('\n');
+    const url = extractUrl(sh.url) || extractUrl(sh.text);
+    // Un link di Pinterest (o un link da solo) va nelle ispirazioni
+    const onlyLink = url && !sh.text.replace(/https?:\/\/\S+/g, '').replace(/[\s\-–:]+/g, '').length;
+    if (url && (isPinterestUrl(url) || onlyLink)) {
+        const t = sh.title && !/^https?:/i.test(sh.title) && !/pinterest/i.test(sh.title) ? sh.title : '';
+        openPinModal(null, null, { url, title:t.slice(0, 80) });
+        return;
+    }
+    ui.section = 'shop'; saveUi(); render();
+    openImport([sh.text, sh.title].filter(Boolean).join('\n') || all);
+}
 
 // ── Archivio immagini (IndexedDB: regge molte più foto del localStorage) ────
 let _idbP = null;
@@ -2350,13 +2603,16 @@ const HELP = {
         'Scegli la stanza (ti viene suggerita quella trascurata da più tempo) e avvia il timer. Lo schermo resta acceso; alla fine suona.',
         'Se finisci prima, tocca “Ho finito”: conta i minuti fatti e i cucchiaini in proporzione.'] },
     rooms:{ t:'Stanze', b:[
-        'Ogni stanza ha la sua <b>lista di cose da fare</b>, le sue <b>foto</b> e uno spazio per le note.',
+        'Ogni stanza ha la sua <b>lista di cose da fare</b>, le sue <b>foto</b>, le <b>ispirazioni</b> da Pinterest e uno spazio per le note.',
+        'L’icona viene scelta dal nome della stanza; per cambiarla tocca l’icona in “Modifica” o in cima alla stanza.',
         'La copertina è la foto “Obiettivo” più recente. La barra mostra quante cose hai già fatto.',
         'Con “Modifica” aggiungi, rinomini, riordini o elimini le stanze (le stesse del Riordino).'] },
     room:{ t:'Una stanza', b:[
         '<b>+ Foto</b>: scatta o scegli un’immagine e dille se è com’è <b>adesso</b>, l’<b>obiettivo</b> o un’<b>idea</b>.',
         'Tocca una foto per ingrandirla, poi <b>Scrivi e disegna</b> per annotarla: per esempio scrivi “phon, piastra, spazzole” sopra un cubo del Kallax.',
-        'Le cose da fare senza data restano qui. Toccane una e scegli un giorno: comparirà negli impegni e nelle energie.'] },
+        'Le cose da fare senza data restano qui. Toccane una e scegli un giorno: comparirà negli impegni e nelle energie.',
+        '<b>Ispirazioni</b>: incolla il link di una bacheca o di un Pin di Pinterest. Si apre nell’app Pinterest con un tocco e, se la bacheca è pubblica e hai il link completo (quello del browser, non “pin.it”), la vedi anche in anteprima.',
+        'Dall’app Pinterest: <b>Condividi → Casa Hub</b> e scegli la stanza. Serve l’app installata sul telefono (Chrome → menu ⋮ → Aggiungi a schermata Home).'] },
     photo:{ t:'Scrivere sulle foto', b:[
         '<b>Penna</b>: disegna o scrivi a mano. <b>Testo</b>: tocca un punto e scrivi un’etichetta (tocca un’etichetta per modificarla). <b>Gomma</b>: passa sopra a un tratto o a una scritta per toglierli.',
         'Con <b>due dita</b> ingrandisci e sposti. Da ingrandita il tratto resta fine: comodo per scrivere su dettagli piccoli.',
@@ -2374,8 +2630,10 @@ const HELP = {
         'La prima volta: aggiorna lo script (Sync → Script Google), poi nell’editor scegli la funzione <b>autorizza</b> e premi Esegui, accettando i permessi. Fai il deployment di una nuova versione e torna qui ad attivare.',
         'Nell’app Google Calendar controlla che il calendario “Casa Hub” sia visibile e sincronizzato. “Manda una prova adesso” verifica che tutto funzioni.'] },
     shop:{ t:'Spesa', b:[
-        'Tocca un prodotto per segnarlo <b>da comprare</b>; con ⋯ aggiungi quantità o note. Scrivi nel campo in alto per cercare o aggiungere.',
-        '<b>Stampa / PDF</b> crea la lista divisa per reparti. <b>Google Doc</b> la salva nel tuo Drive. <b>Invia</b> la manda su WhatsApp o altre app.',
+        'Tocca un prodotto per segnarlo <b>da comprare</b>; con ⋯ aggiungi quantità, note e i <b>negozi</b> dove si compra. Scrivi nel campo in alto per cercare o aggiungere.',
+        '<b>Negozi</b>: tocca un negozio in alto per vedere solo ciò che si compra lì. Un prodotto può stare in più negozi (il detersivo al supermercato e da Tiger): quando lo compri in uno, sparisce da tutti. Quello che non ha un negozio scelto va nel <b>principale</b> (★ in “Gestisci negozi”).',
+        '<b>Stampa / PDF</b>, <b>Google Doc</b> e <b>Invia</b> esportano il negozio scelto, oppure tutto con “Tutti i negozi” (accanto ai prodotti degli altri negozi c’è scritto dove prenderli). Anche “Spesa fatta” azzera solo il negozio scelto.',
+        '<b>Da WhatsApp</b>: copia il messaggio e tocca “Incolla una lista”, oppure dal messaggio <b>Condividi → Casa Hub</b>. L’app trova i prodotti (anche “2 kg di patate e il pane”) e te li fa controllare prima di aggiungerli.',
         'Metti i reparti nell’ordine del tuo supermercato con “Gestisci reparti”. Dopo la spesa tocca “Spesa fatta”.'] },
     sync:{ t:'Sync e backup', b:[
         'Collegando uno script Google (le istruzioni sono qui sotto) usi l’app su più dispositivi: i dati stanno in un tuo Foglio Google, le foto in una cartella del tuo Drive.',
@@ -2395,9 +2653,9 @@ const TOUR = [
     { i:'✓', t:'Impegni', b:'Con <b>+</b> aggiungi un impegno, con urgenza, data e ripetizione. Tocca il cerchio quando l’hai fatto, oppure tocca il nome per rimandarlo. Se arriva un imprevisto, un tasto sposta tutto a domani.' },
     { i:'🥄', t:'Le tue energie', spoons:true, b:'Ogni mattina un piccolo check-in stima i tuoi <b>cucchiaini</b>. Ogni impegno ne costa un po’ (anche zero o a quarti). Se la giornata è troppo piena, l’app ti dice cosa spostare.' },
     { i:'◷', t:'Riordino', b:'15 minuti al giorno, una stanza alla volta, con un timer. Niente perfezionismo: quando suona, ti fermi.' },
-    { i:'▣', t:'Stanze', b:'Per ogni stanza: la lista delle cose da fare e le foto di com’è e di come la vorresti. Sulle foto puoi <b>scrivere e disegnare</b>, anche con la pennina.' },
+    { i:'▣', t:'Stanze', b:'Per ogni stanza: la lista delle cose da fare, le foto di com’è e di come la vorresti e le bacheche di <b>Pinterest</b> con le idee. Sulle foto puoi <b>scrivere e disegnare</b>, anche con la pennina.' },
     { i:'❄', t:'Frigo', b:'Segna cosa c’è e quando scade: l’app ti mostra cosa consumare per primo e, se colleghi la sync, ti manda un promemoria ogni mattina. Dopo la spesa ti propone di mettere via i prodotti freschi.' },
-    { i:'🛒', t:'Spesa', b:'Spunta quello che serve: la lista si stampa divisa per reparti, diventa un Google Doc o parte su WhatsApp.' },
+    { i:'🛒', t:'Spesa', b:'Spunta quello che serve, anche negozio per negozio: la lista si stampa divisa per reparti, diventa un Google Doc o parte su WhatsApp. E se qualcuno ti scrive cosa comprare, condividi il messaggio a Casa Hub.' },
     { i:'☁', t:'Su più dispositivi', b:'Dal tasto con la nuvoletta in alto colleghi la sincronizzazione con Google: dati e foto restano tuoi, nel tuo Drive. Fatto questo, si comincia!' },
 ];
 let tourIdx = 0;
@@ -2502,7 +2760,7 @@ function renderTidy(app){
             <div class="room-grid">${rooms.map(r => {
                 const last = lastTidyOf(r.id);
                 return `<button class="room-card${r.id === ui.tidyRoom ? ' on' : ''}" onclick="ui.tidyRoom=${jsArg(r.id)};saveUi();render()">
-                    <span class="room-name">${escHtml(r.name)}</span><span class="room-last">${r.id === (sug && sug.id) && last !== today ? 'suggerita · ' : ''}${relDays(last)}</span></button>`;
+                    <span class="room-name">${roomIconHtml(r, 'xs')}${escHtml(r.name)}</span><span class="room-last">${r.id === (sug && sug.id) && last !== today ? 'suggerita · ' : ''}${relDays(last)}</span></button>`;
             }).join('') || `<div class="empty-note">Aggiungi le tue stanze.</div>`}</div>
             <button class="btn btn-primary big-start" onclick="startTidy()" ${sel ? '' : 'disabled'}>Inizia ${st.tidyMin} minuti${sel ? ' in ' + escHtml(sel.name.toLowerCase()) : ''}</button>
         </div>`;
@@ -2845,7 +3103,7 @@ function addNameToShopping(name){
     let it = data.shopItems.find(i => normName(i.name) === n);
     if (!it) {
         const cat = sortedShopCats()[0];
-        it = { id:uid(), catId:cat ? cat.id : null, name, need:false, qty:'' };
+        it = { id:uid(), catId:cat ? cat.id : null, name, need:false, qty:'', shops:[] };
         data.shopItems.push(it);
     }
     it.need = true;
@@ -2980,24 +3238,71 @@ function orphanItems(){
     const ids = new Set(data.shopCats.map(c => c.id));
     return data.shopItems.filter(i => !i.catId || !ids.has(i.catId)).sort((a, b) => a.name.localeCompare(b.name, 'it'));
 }
-// Sezioni per stampa / Doc / messaggio: solo prodotti spuntati, nell'ordine dei reparti
-function neededSections(){
+// ── Negozi ──────────────────────────────────────────────────────────────────
+// Un prodotto senza negozi scelti si compra nel negozio principale.
+function shopsList(){ return [...settings().shops].sort((a, b) => a.order - b.order); }
+function getShop(id){ return id ? settings().shops.find(x => x.id === id) || null : null; }
+function mainShopId(){ const m = settings().mainShop; return getShop(m) ? m : null; }
+function itemShops(it){
+    const ids = (it.shops || []).filter(id => getShop(id));
+    if (ids.length) return ids;
+    const m = mainShopId();
+    return m ? [m] : [];
+}
+function itemInShop(it, sid){ return !sid || itemShops(it).includes(sid); }
+function activeShop(){ return getShop(ui.shopId) ? ui.shopId : null; }
+// Aggiunge il negozio a un prodotto senza togliergli quello principale implicito
+function addShopToItem(it, sid){
+    if (!sid || itemInShop(it, sid)) return false;
+    const cur = (it.shops || []).filter(id => getShop(id));
+    it.shops = cur.length ? [...cur, sid] : [mainShopId(), sid].filter(Boolean);
+    return true;
+}
+function neededIn(sid){ return data.shopItems.filter(i => i.need && itemInShop(i, sid)).length; }
+// Negozi da indicare accanto a un prodotto nella lista (solo quelli diversi dal principale)
+function shopTagsFor(it, active){
+    const main = mainShopId();
+    let ids;
+    if (!active) ids = (it.shops || []).filter(id => getShop(id) && id !== main);
+    else if (!itemInShop(it, active)) ids = itemShops(it);
+    else ids = [];
+    return ids.map(getShop).filter(Boolean);
+}
+function shopTagHtml(x){ return `<span class="store-tag" style="--sc:${escHtml(x.color)}">${escHtml(x.name)}</span>`; }
+
+// Sezioni per stampa / Doc / messaggio: solo prodotti spuntati del negozio scelto
+// (o di tutti), nell'ordine dei reparti. Con "Tutti i negozi" ogni prodotto che
+// non si compra nel principale riporta dove prenderlo.
+function neededSections(sid){
+    if (sid === undefined) sid = activeShop();
+    const main = mainShopId();
+    const note = i => {
+        if (sid) return '';
+        const ids = itemShops(i);
+        return ids.includes(main) ? '' : ids.map(id => getShop(id).name).join(', ');
+    };
+    const wrap = items => items.filter(i => i.need && itemInShop(i, sid)).map(i => ({ name:i.name, qty:i.qty, where:note(i) }));
     const out = [];
     sortedShopCats().forEach(c => {
-        const items = itemsOf(c.id).filter(i => i.need);
+        const items = wrap(itemsOf(c.id));
         if (items.length) out.push({ name:c.name, items });
     });
-    const orph = orphanItems().filter(i => i.need);
+    const orph = wrap(orphanItems());
     if (orph.length) out.push({ name:'Altro', items:orph });
     return out;
 }
+function itemLabel(i){ return i.name + (i.qty ? ` (${i.qty})` : '') + (i.where ? ` → ${i.where}` : ''); }
+function listTitle(){ const x = getShop(activeShop()); return x ? `Lista della spesa: ${x.name}` : 'Lista della spesa'; }
 
 function renderShop(app){
     const cats = sortedShopCats();
-    const n = data.shopItems.filter(i => i.need).length;
+    const sid = activeShop();
+    if (ui.shopId && !sid) { ui.shopId = null; saveUi(); }
+    const n = neededIn(sid);
     const lastCat = getShopCat(ui.lastShopCat) ? ui.lastShopCat : (cats[0] && cats[0].id);
     app.innerHTML = `
-        <div class="shop-head"><span class="shop-count-num" id="shopCount">${n}</span><span class="shop-count-label">da comprare</span>${helpBtn('shop')}</div>
+        <div class="shop-head"><span class="shop-count-num" id="shopCount">${n}</span><span class="shop-count-label" id="shopCountLabel">${shopCountLabel(sid)}</span>${helpBtn('shop')}</div>
+        <div class="store-row" id="shopStores"></div>
         <div class="shop-actions">
             <button class="btn btn-primary" onclick="printShopping()">Stampa / PDF</button>
             <button class="btn btn-secondary" id="docBtn" onclick="createShoppingDoc()">Google Doc</button>
@@ -3010,6 +3315,8 @@ function renderShop(app){
             </div>
             <button class="link-btn" onclick="clearShopping()">Spesa fatta</button>
         </div>
+        <button class="paste-btn" onclick="openImport()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 4.5h-2A1.5 1.5 0 0 0 5 6v13.5A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5h-2"/><rect x="8.5" y="3" width="7" height="3.2" rx="1"/><path d="M8.5 11h7M8.5 14.5h7M8.5 18h4"/></svg>
+            <span><b>Incolla una lista</b><small>Da un messaggio di WhatsApp o da un’altra app</small></span></button>
         <div class="shop-add">
             <input type="text" id="shopQuery" placeholder="Cerca o aggiungi un prodotto" maxlength="80" autocomplete="off"
                 oninput="renderShopList()" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddShop();}">
@@ -3019,13 +3326,40 @@ function renderShop(app){
             <button class="add-btn" onclick="quickAddShop()">Aggiungi</button>
         </div>
         <div id="shopList"></div>
-        <button class="btn btn-secondary" onclick="openShopCatsModal()">Gestisci reparti</button>`;
+        <div class="modal-btns">
+            <button class="btn btn-secondary" onclick="openShopCatsModal()">Gestisci reparti</button>
+            <button class="btn btn-secondary" onclick="openShopsModal()">Gestisci negozi</button>
+        </div>`;
+    renderShopStores();
     renderShopList();
 }
+function shopCountLabel(sid){
+    const x = getShop(sid);
+    return x ? `da comprare <span class="store-tag big" style="--sc:${escHtml(x.color)}">${escHtml(x.name)}</span>` : 'da comprare';
+}
+function renderShopStores(){
+    const box = $('shopStores');
+    if (!box) return;
+    const sid = activeShop();
+    const all = data.shopItems.filter(i => i.need).length;
+    box.innerHTML = `<button class="store-chip${sid ? '' : ' on'}" onclick="setShop(null)">Tutti i negozi${all ? ` <b>${all}</b>` : ''}</button>`
+        + shopsList().map(x => {
+            const c = neededIn(x.id);
+            return `<button class="store-chip${sid === x.id ? ' on' : ''}" style="--sc:${escHtml(x.color)}" onclick="setShop(${jsArg(x.id)})"><i class="store-dot"></i>${escHtml(x.name)}${c ? ` <b>${c}</b>` : ''}</button>`;
+        }).join('')
+        + `<button class="store-chip ghost" onclick="openShopsModal()" aria-label="Gestisci negozi">+ Negozio</button>`;
+    const on = box.querySelector('.store-chip.on');
+    if (on && (on.offsetLeft + on.offsetWidth > box.scrollLeft + box.clientWidth || on.offsetLeft < box.scrollLeft)) box.scrollLeft = on.offsetLeft - 16;
+}
+function setShop(id){
+    ui.shopId = id; saveUi();
+    renderShop($('appContent'));
+}
 function shopItemHtml(i){
+    const tags = shopTagsFor(i, activeShop());
     return `<div class="shop-item${i.need ? ' on' : ''}" onclick="toggleNeed(${jsArg(i.id)})" role="checkbox" aria-checked="${i.need}">
         <span class="shop-box"></span>
-        <span class="shop-name">${escHtml(i.name)}</span>
+        <span class="shop-name">${escHtml(i.name)}${tags.length ? `<span class="store-tags">${tags.map(shopTagHtml).join('')}</span>` : ''}</span>
         ${i.qty ? `<span class="shop-qty">${escHtml(i.qty)}</span>` : ''}
         <button class="shop-edit" onclick="event.stopPropagation();openShopItem(${jsArg(i.id)})" aria-label="Modifica ${escHtml(i.name)}">⋯</button>
     </div>`;
@@ -3035,11 +3369,15 @@ function renderShopList(){
     if (!box) return;
     const q = normName($('shopQuery') ? $('shopQuery').value : '');
     const onlyNeed = ui.shopFilter === 'need';
-    const groups = sortedShopCats().map(c => ({ c, items:itemsOf(c.id) }));
-    const orph = orphanItems();
+    const sid = activeShop();
+    // Mentre cerchi vedi tutto il catalogo, anche i prodotti di altri negozi
+    const inShop = list => (sid && !q) ? list.filter(i => itemInShop(i, sid)) : list;
+    const groups = sortedShopCats().map(c => ({ c, items:inShop(itemsOf(c.id)) }));
+    const orph = inShop(orphanItems());
     if (orph.length) groups.push({ c:{ id:'__orphan', name:'Altro' }, items:orph });
     let html = '';
     groups.forEach(({ c, items }) => {
+        if (sid && !q && !items.length) return;
         const total = items.length, needN = items.filter(i => i.need).length;
         let shown = items;
         if (onlyNeed) shown = shown.filter(i => i.need);
@@ -3058,17 +3396,19 @@ function renderShopList(){
     const exact = q && data.shopItems.some(i => normName(i.name) === q);
     if (raw && !exact) {
         const cat = getShopCat($('shopAddCat') && $('shopAddCat').value);
-        html = `<div class="shop-new" onclick="quickAddShop()">+ Aggiungi “${escHtml(raw)}”${cat ? ` in ${escHtml(cat.name)}` : ''}</div>` + html;
+        const shop = getShop(sid);
+        html = `<div class="shop-new" onclick="quickAddShop()">+ Aggiungi “${escHtml(raw)}”${cat ? ` in ${escHtml(cat.name)}` : ''}${shop && sid !== mainShopId() ? `, da ${escHtml(shop.name)}` : ''}</div>` + html;
     }
     if (!html) html = onlyNeed
-        ? `<div class="empty-note">Non hai ancora spuntato niente. Passa a “Tutti” e tocca ciò che serve.</div>`
+        ? `<div class="empty-note">${sid ? `Niente da comprare qui.` : `Non hai ancora spuntato niente.`} Passa a “Tutti” e tocca ciò che serve.</div>`
+        : sid ? `<div class="empty-note">Nessun prodotto si compra qui. Scrivi un prodotto qui sopra, oppure apri un prodotto con ⋯ e scegli i negozi.</div>`
         : `<div class="empty-note">Il catalogo è vuoto. Scrivi un prodotto qui sopra per aggiungerlo.</div>`;
     box.innerHTML = html;
 }
 function refreshShopCounts(){
-    const n = data.shopItems.filter(i => i.need).length;
     const el = $('shopCount');
-    if (el) el.textContent = n;
+    if (el) el.textContent = neededIn(activeShop());
+    renderShopStores();
 }
 function toggleNeed(id){
     const it = data.shopItems.find(i => i.id === id);
@@ -3086,13 +3426,16 @@ function quickAddShop(){
     const name = inp ? inp.value.trim() : '';
     if (!name) { if (inp) inp.focus(); return; }
     const existing = data.shopItems.find(i => normName(i.name) === normName(name));
+    const sid = activeShop(), shop = getShop(sid);
     if (existing) {
         existing.need = true;
-        showToast(`“${existing.name}” segnato da comprare`);
+        const added = addShopToItem(existing, sid);
+        showToast(added ? `“${existing.name}” da comprare, anche da ${shop.name}` : `“${existing.name}” segnato da comprare`);
     } else {
         let catId = $('shopAddCat') ? $('shopAddCat').value : null;
         if (!getShopCat(catId)) catId = null;
-        data.shopItems.push({ id:uid(), catId, name:name.charAt(0).toUpperCase() + name.slice(1), need:true, qty:'' });
+        data.shopItems.push({ id:uid(), catId, name:name.charAt(0).toUpperCase() + name.slice(1), need:true, qty:'',
+            shops:(sid && sid !== mainShopId()) ? [sid] : [] });
         if (catId) delete ui.collapsed[catId];
         showToast(`“${name}” aggiunto`);
     }
@@ -3100,12 +3443,17 @@ function quickAddShop(){
     save(); renderShopList(); refreshShopCounts();
 }
 function clearShopping(){
-    const n = data.shopItems.filter(i => i.need).length;
+    const sid = activeShop(), shop = getShop(sid);
+    const list = data.shopItems.filter(i => i.need && itemInShop(i, sid));
+    const n = list.length;
     if (!n) { showToast('Non c\'è niente da azzerare'); return; }
-    confirmDialog({ title:'Spesa fatta?', msg:`Tolgo la spunta e la quantità da ${n} ${n === 1 ? 'prodotto' : 'prodotti'}. Il catalogo resta com'è.`, ok:'Azzera', danger:false }, () => {
-        const before = data.shopItems.filter(i => i.need).map(i => ({ id:i.id, qty:i.qty }));
-        const bought = data.shopItems.filter(i => i.need).map(i => ({ name:i.name, qty:i.qty, catId:i.catId }));
-        data.shopItems.forEach(i => { if (i.need) { i.need = false; i.qty = ''; } });
+    const others = data.shopItems.filter(i => i.need).length - n;
+    const msg = `Tolgo la spunta e la quantità da ${n} ${n === 1 ? 'prodotto' : 'prodotti'}${shop ? ` di ${shop.name}` : ''}.`
+        + (others ? ` Gli altri ${others} restano in lista.` : '') + ` Il catalogo resta com'è.`;
+    confirmDialog({ title:'Spesa fatta?', msg, ok:'Azzera', danger:false }, () => {
+        const before = list.map(i => ({ id:i.id, qty:i.qty }));
+        const bought = list.map(i => ({ name:i.name, qty:i.qty, catId:i.catId }));
+        list.forEach(i => { i.need = false; i.qty = ''; });
         save(); render();
         setTimeout(() => openToFridge(bought), 250);
         showToast('Lista azzerata', { label:'Annulla', fn:() => {
@@ -3126,7 +3474,21 @@ function openShopItem(id){
     $('siNeed').checked = it.need;
     $('siCat').innerHTML = sortedShopCats().map(c => `<option value="${escHtml(c.id)}"${c.id === it.catId ? ' selected' : ''}>${escHtml(c.name)}</option>`).join('')
         + (getShopCat(it.catId) ? '' : `<option value="" selected>Altro (senza reparto)</option>`);
+    formShops = (it.shops || []).filter(id => getShop(id));
+    renderItemShops();
     openModal('modalShopItem');
+}
+let formShops = [];
+function renderItemShops(){
+    const main = getShop(mainShopId());
+    $('siShops').innerHTML = shopsList().map(x => `<button type="button" class="chip store-pick${formShops.includes(x.id) ? ' on' : ''}" style="--sc:${escHtml(x.color)}" onclick="toggleItemShop(${jsArg(x.id)})"><i class="store-dot"></i>${escHtml(x.name)}</button>`).join('')
+        || `<span class="hint" style="color:var(--text-dim);">Nessun negozio: aggiungili da “Gestisci negozi”.</span>`;
+    $('siShopsHint').textContent = formShops.length ? (formShops.length > 1 ? 'Compare nella lista di ognuno: quando lo compri in uno, sparisce da tutti.' : '')
+        : (main ? `Nessuno scelto: si compra da ${main.name}, il negozio principale.` : '');
+}
+function toggleItemShop(id){
+    formShops = formShops.includes(id) ? formShops.filter(x => x !== id) : [...formShops, id];
+    renderItemShops();
 }
 function saveShopItem(){
     const it = data.shopItems.find(i => i.id === editingItemId);
@@ -3141,6 +3503,10 @@ function saveShopItem(){
     it.name = name;
     it.qty = qty;
     it.catId = $('siCat').value || null;
+    // Solo il principale scelto equivale a nessuna scelta
+    const main = mainShopId();
+    it.shops = shopsList().map(x => x.id).filter(id => formShops.includes(id));
+    if (it.shops.length === 1 && it.shops[0] === main) it.shops = [];
     save(); closeModal('modalShopItem'); render();
 }
 function deleteShopItem(){
@@ -3201,6 +3567,243 @@ function deleteShopCat(id){
     });
 }
 
+// ── Gestione negozi ─────────────────────────────────────────────────────────
+function openShopsModal(){ renderShopsBody(); openModal('modalShops'); }
+function renderShopsBody(){
+    const list = shopsList(), main = mainShopId();
+    $('shopsBody').innerHTML = list.map((x, i) => {
+        const a = jsArg(x.id), n = data.shopItems.filter(it => (it.shops || []).includes(x.id)).length;
+        const isMain = x.id === main;
+        return `<div class="mg-cat"><div class="mg-row">
+            <button class="mg-swatch" style="background:${escHtml(x.color)}" onclick="cycleShopColor(${a})" aria-label="Cambia colore"></button>
+            <input type="text" value="${escHtml(x.name)}" maxlength="40" onchange="renameShop(${a},this.value)" aria-label="Nome negozio">
+            <button class="mg-btn star${isMain ? ' on' : ''}" onclick="setMainShop(${a})" aria-label="${isMain ? 'Negozio principale' : 'Rendi principale'}" title="${isMain ? 'Negozio principale' : 'Rendi principale'}">${isMain ? '★' : '☆'}</button>
+            <button class="mg-btn" onclick="moveShop(${a},-1)" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su">▲</button>
+            <button class="mg-btn" onclick="moveShop(${a},1)" ${i === list.length - 1 ? 'disabled' : ''} aria-label="Sposta giù">▼</button>
+            <button class="mg-btn danger" onclick="deleteShop(${a})" aria-label="Elimina">✕</button>
+        </div><div class="mg-note">${isMain ? 'Principale: qui finisce tutto ciò che non ha un negozio scelto' : n ? `${n} ${n === 1 ? 'prodotto' : 'prodotti'}` : 'Ancora nessun prodotto'}</div></div>`;
+    }).join('') + `<div class="mg-row" style="margin-top:14px;">
+        <input type="text" id="newShop" placeholder="Nuovo negozio (es. Tiger, Ikea, mercato)" maxlength="40" onkeydown="if(event.key==='Enter'){event.preventDefault();addShop();}">
+        <button class="add-btn" onclick="addShop()">Aggiungi</button></div>`;
+}
+function shopsChanged(){ save(); renderShopsBody(); _pendingRender = true; }
+function addShop(){
+    const inp = $('newShop'), name = inp.value.trim();
+    if (!name) return;
+    const st = settings();
+    if (st.shops.some(x => normName(x.name) === normName(name))) { showToast(`⚠ “${name}” esiste già`); return; }
+    const maxO = st.shops.reduce((m, x) => Math.max(m, x.order), -1);
+    st.shops.push({ id:uid(), name, color:CAT_COLORS[st.shops.length % CAT_COLORS.length], order:maxO + 1 });
+    if (!getShop(st.mainShop)) st.mainShop = st.shops[0].id;
+    shopsChanged();
+    const again = $('newShop'); if (again) again.focus();
+}
+function renameShop(id, v){ const x = getShop(id); v = String(v).trim(); if (x && v) { x.name = v.slice(0, 40); save(); _pendingRender = true; } }
+function cycleShopColor(id){
+    const x = getShop(id);
+    if (!x) return;
+    x.color = CAT_COLORS[(CAT_COLORS.indexOf(x.color) + 1) % CAT_COLORS.length];
+    shopsChanged();
+}
+function moveShop(id, dir){
+    const list = shopsList(), i = list.findIndex(x => x.id === id), j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    list.forEach((x, k) => { x.order = k; });
+    shopsChanged();
+}
+function setMainShop(id){
+    const st = settings(), old = mainShopId();
+    if (!getShop(id) || id === old) return;
+    // I prodotti che non avevano un negozio scelto restano dove si compravano
+    const keep = data.shopItems.filter(it => !(it.shops || []).some(s => getShop(s)));
+    confirmDialog({ title:'Cambiare il principale?', danger:false, ok:'Cambia',
+        msg:`Da ora i prodotti nuovi senza negozio finiscono in “${getShop(id).name}”.` + (old && keep.length ? ` I ${keep.length} prodotti che si compravano in “${getShop(old).name}” restano lì.` : '') }, () => {
+        if (old) keep.forEach(it => { it.shops = [old]; });
+        st.mainShop = id;
+        data.shopItems.forEach(it => { if (it.shops && it.shops.length === 1 && it.shops[0] === id) it.shops = []; });
+        shopsChanged();
+    });
+}
+function deleteShop(id){
+    const st = settings(), x = getShop(id);
+    if (!x) return;
+    const only = data.shopItems.filter(it => { const s = (it.shops || []).filter(getShop); return s.length === 1 && s[0] === id; }).length;
+    const isMain = id === mainShopId();
+    const rest = shopsList().filter(y => y.id !== id);
+    const nextMain = isMain ? (rest[0] || null) : getShop(mainShopId());
+    let msg = `Il negozio “${x.name}” verrà eliminato. I prodotti restano nel catalogo.`;
+    if (only && nextMain) msg += ` ${only === 1 ? 'Il prodotto che si comprava solo lì passa' : `I ${only} prodotti che si compravano solo lì passano`} a “${nextMain.name}”.`;
+    if (isMain && nextMain) msg += ` Il nuovo principale sarà “${nextMain.name}”: lì finiranno anche i prodotti senza un negozio scelto.`;
+    confirmDialog({ title:'Eliminare?', msg }, () => {
+        data.shopItems.forEach(it => { if (it.shops && it.shops.includes(id)) it.shops = it.shops.filter(s => s !== id); });
+        st.shops = st.shops.filter(y => y.id !== id);
+        if (isMain) {
+            st.mainShop = nextMain ? nextMain.id : null;
+            if (nextMain) data.shopItems.forEach(it => { if (it.shops && it.shops.length === 1 && it.shops[0] === nextMain.id) it.shops = []; });
+        }
+        if (ui.shopId === id) { ui.shopId = null; saveUi(); }
+        shopsChanged();
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  LISTA DA WHATSAPP: incolla o condividi un messaggio, l'app trova i prodotti
+// ═══════════════════════════════════════════════════════════════════════════
+const QTY_UNIT = 'kg|g|gr|grammi|hg|etti|etto|l|lt|litri|litro|ml|cl|pz|pezzi|pezzo|conf|confezioni|confezione|pacchi|pacco|pacchetti|pacchetto|bottiglie|bottiglia|vasetti|vasetto|vasi|vaso|scatole|scatola|scatolette|scatoletta|buste|busta|vaschette|vaschetta|rotoli|rotolo|barattoli|barattolo|dozzina|dozzine|cespi|cespo|mazzi|mazzo|fette|tubetti|tubetto|flaconi|flacone|lattine|lattina|brick';
+const NUM_WORDS = { un:1, uno:1, una:1, due:2, tre:3, quattro:4, cinque:5, sei:6, sette:7, otto:8, nove:9, dieci:10, dodici:12, mezzo:'½', mezza:'½' };
+const NUM_RE = '(\\d+(?:[.,]\\d+)?|un[oa]?|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|dodici|mezz[oa])';
+const RE_QTY_HEAD = new RegExp('^' + NUM_RE + '\\s*(' + QTY_UNIT + ')?\\.?\\s+(?:di\\s+|d[\'’]\\s*)?(.+)$', 'i');
+const RE_QTY_TAIL = new RegExp('^(.+?)\\s+(?:x\\s*)?(\\d+(?:[.,]\\d+)?)\\s*(' + QTY_UNIT + ')?\\.?$', 'i');
+const RE_LEAD = /^(ciao|ehi|hey|allora|poi|anche|inoltre|e|ah|ok|per favore|perfavore|per piacere|mi raccomando|quando passi|se passi|puoi prendere|puoi comprare|potresti prendere|potresti comprare|mi prendi|mi compri|ci prendi|prendi|prendere|compra|comprare|compri|ricordati|ricorda|ci serve|ci servono|mi serve|mi servono|serve|servono|manca|mancano|è finito|è finita|sono finiti|sono finite|finito|finita|lista( della spesa)?|spesa|da comprare|anche)\b[\s:,!.\-]*/i;
+// Articoli: le parole intere vogliono uno spazio dopo ("i" non deve mangiarsi l'inizio di "insalata")
+const RE_ARTICLE = /^(?:(?:un po['’]? di|un po['’]?|il|lo|la|i|gli|le|del|dello|della|dei|degli|delle|qualche|uno|una|un)\s+|(?:l|dell|un|nell|all)['’]\s*)/i;
+const IMPORT_STOP = new Set(['grazie','grazie mille','ciao','baci','bacio','bacioni','un bacio','ok','okay','va bene','si','sì','no','tutto','tutto qui','basta','niente altro','nientaltro','nient altro',
+    'a dopo','dopo','a stasera','stasera','oggi','domani','tvb','grz','pls','per favore','ecc','eccetera','etc','amore','tesoro','cara','caro','mamma','papa','papà']);
+
+function parseShoppingText(text){
+    const out = [], seen = new Set();
+    String(text || '').replace(/\r/g, '').split('\n').forEach(line => {
+        line = line
+            .replace(/^\s*\[[^\]]{4,40}\]\s*[^:]{1,40}:\s*/, '')                                  // [01/11/26, 10:32] Mamma:
+            .replace(/^\s*\d{1,2}[/.]\d{1,2}[/.]\d{2,4},?\s+\d{1,2}[:.]\d{2}\s*-\s*[^:]{1,40}:\s*/, '') // 01/11/26, 10:32 - Mamma:
+            .replace(/https?:\/\/\S+/g, ' ')
+            .replace(/\p{Extended_Pictographic}|\uFE0F|\u200D/gu, ' ');
+        line.split(/[,;•·|!?]|\.\s+|\s+e\s+|\s+ed\s+|\s+\+\s+|\s+poi\s+|\s+anche\s+/i).forEach(part => {
+            let s = part.replace(/^[\s\-–—*▢☐☑✔✓>_~"“”]+/, '').replace(/^\d+[.)]\s+/, '').replace(/[*_~"“”]/g, '').trim();
+            for (let k = 0; k < 4; k++) { const t = s.replace(RE_LEAD, ''); if (t === s) break; s = t.trim(); }
+            s = s.replace(/\s*(per favore|perfavore|grazie|pls|please|ecc\.?|eccetera)\s*$/i, '').replace(/[\s.!?…:]+$/, '').trim();
+            // frasi lunghe (domande, saluti) non sono prodotti
+            if (!s || IMPORT_STOP.has(normName(s)) || s.length < 2 || s.length > 60 || s.split(/\s+/).length > 6) return;
+            let qty = '', name = s, m;
+            if ((m = s.match(/^(.+?)\s*\(([^)]{1,25})\)$/))) { name = m[1]; qty = m[2]; }
+            else if ((m = s.match(RE_QTY_HEAD))) {
+                const w = normName(m[1]), num = NUM_WORDS[w] !== undefined ? NUM_WORDS[w] : m[1];
+                if (m[2] || /\d/.test(m[1]) || (typeof num === 'number' && num > 1)) { qty = `${num}${m[2] ? ' ' + m[2].toLowerCase() : ''}`; name = m[3]; }
+                // "una mozzarella", "un po' di zucchero": niente quantità, l'articolo lo toglie RE_ARTICLE
+            } else if ((m = s.match(RE_QTY_TAIL))) { name = m[1]; qty = `${m[2]}${m[3] ? ' ' + m[3].toLowerCase() : ''}`; }
+            name = name.replace(RE_ARTICLE, '').replace(/^(di|da)\s+/i, '').trim();
+            if (!name || name.length < 2 || IMPORT_STOP.has(normName(name))) return;
+            name = name.charAt(0).toUpperCase() + name.slice(1);
+            const key = normName(name);
+            if (seen.has(key)) return;
+            seen.add(key);
+            out.push({ name, qty:qty.trim() });
+        });
+    });
+    return out;
+}
+// Trova il prodotto nel catalogo anche al singolare/plurale (mela → Mele, uovo → Uova)
+function stemWord(w){ return w.replace(/(che|ghe|chi|ghi)$/, m => m.charAt(0)).replace(/[aeio]$/, ''); }
+function stemName(s){ return stemWord(normName(s).replace(/[^a-z0-9 ]/g, '')); }
+// Chiave per parole: "Detersivo per lavatrice" e "detersivo lavatrice" sono lo stesso prodotto
+const MATCH_SKIP = new Set(['per','di','da','del','della','dei','delle','al','alla','ai','alle','il','lo','la','i','gli','le','e','in','con','a','d','l']);
+function wordKey(s){ return normName(s).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w && !MATCH_SKIP.has(w)).map(stemWord).join(' '); }
+function findCatalogItem(name){
+    const n = normName(name);
+    const exact = data.shopItems.find(i => normName(i.name) === n);
+    if (exact) return exact;
+    const st = stemName(name);
+    const byStem = st.length >= 3 ? data.shopItems.find(i => stemName(i.name) === st) : null;
+    if (byStem) return byStem;
+    const wk = wordKey(name);
+    return wk.length >= 3 ? data.shopItems.find(i => wordKey(i.name) === wk) || null : null;
+}
+
+let imp = null;
+async function openImport(prefill){
+    imp = { step:'paste', text:prefill || '', rows:[], shop:activeShop() || mainShopId(), from:prefill ? 'share' : 'paste' };
+    if (prefill) { buildImportRows(); if (!imp.rows.length) imp.step = 'paste'; }
+    else if (navigator.clipboard && navigator.clipboard.readText) {
+        try { const t = await navigator.clipboard.readText(); if (t && t.trim().length < 4000) imp.text = t.trim(); } catch (_) {}
+    }
+    renderImport();
+    openModal('modalImport');
+}
+function buildImportRows(){
+    imp.rows = parseShoppingText(imp.text).map(r => {
+        const it = findCatalogItem(r.name);
+        return { name:it ? it.name : r.name, qty:r.qty, itemId:it ? it.id : null, catId:it ? it.catId : null, on:true };
+    });
+    imp.step = 'review';
+}
+function readImport(){
+    const ta = $('impText');
+    imp.text = ta ? ta.value : imp.text;
+    buildImportRows();
+    if (!imp.rows.length) { imp.step = 'paste'; showToast('⚠ Non ho trovato prodotti: uno per riga o separati da virgole'); }
+    renderImport();
+}
+function renderImport(){
+    const box = $('importBody');
+    if (imp.step === 'paste') {
+        box.innerHTML = `<div class="modal-title">Incolla una lista</div>
+            <p class="confirm-msg">Su WhatsApp tieni premuto il messaggio, tocca <b>Copia</b> e incollalo qui. Vanno bene anche più messaggi insieme: tolgo io data e nome di chi scrive.</p>
+            <textarea id="impText" class="imp-text" placeholder="Es. latte, 6 uova, pane e detersivo per la lavatrice">${escHtml(imp.text)}</textarea>
+            <div class="modal-btns">
+                <button class="btn btn-primary" onclick="readImport()">Trova i prodotti</button>
+                <button class="btn btn-secondary" onclick="closeModal('modalImport')">Annulla</button>
+            </div>
+            <p class="e-hint">Puoi anche <b>condividere</b> il messaggio direttamente a Casa Hub dal menu di WhatsApp, se hai installato l’app sul telefono.</p>`;
+        return;
+    }
+    const cats = sortedShopCats(), n = imp.rows.filter(r => r.on).length;
+    const cnt = `${imp.rows.length} ${imp.rows.length === 1 ? 'prodotto' : 'prodotti'}`;
+    box.innerHTML = `<div class="modal-title">${imp.from === 'share' ? `${cnt} dal messaggio` : `Ho trovato ${cnt}`}</div>
+        <p class="confirm-msg">Controlla i nomi e togli la spunta a ciò che non serve. I prodotti nuovi entrano nel catalogo.</p>
+        <div class="imp-list">${imp.rows.map((r, i) => {
+            const it = r.itemId ? data.shopItems.find(x => x.id === r.itemId) : null;
+            const cat = it ? getShopCat(it.catId) : null;
+            return `<div class="imp-row${r.on ? ' on' : ''}">
+                <button class="shop-box" onclick="imp.rows[${i}].on=!imp.rows[${i}].on;renderImport()" aria-label="Includi"></button>
+                <div class="imp-main">
+                    <div class="imp-fields">
+                        <input type="text" value="${escHtml(r.name)}" maxlength="80" aria-label="Nome" onchange="importRename(${i},this.value)">
+                        <input type="text" class="imp-qty" value="${escHtml(r.qty)}" maxlength="40" placeholder="Quantità" aria-label="Quantità" onchange="imp.rows[${i}].qty=this.value.trim()">
+                    </div>
+                    ${it ? `<div class="imp-note">${it.need ? 'già in lista' : 'nel catalogo'}${cat ? `, ${escHtml(cat.name)}` : ''}</div>`
+                        : `<select class="imp-cat" aria-label="Reparto" onchange="imp.rows[${i}].catId=this.value||null">
+                            <option value="">Nuovo: scegli il reparto</option>
+                            ${cats.map(c => `<option value="${escHtml(c.id)}"${c.id === r.catId ? ' selected' : ''}>${escHtml(c.name)}</option>`).join('')}
+                        </select>`}
+                </div></div>`;
+        }).join('')}</div>
+        ${shopsList().length > 1 ? `<div class="field-label">Da comprare in</div>
+            <div class="chip-row">${shopsList().map(x => `<button type="button" class="chip store-pick${imp.shop === x.id ? ' on' : ''}" style="--sc:${escHtml(x.color)}" onclick="imp.shop=${jsArg(x.id)};renderImport()"><i class="store-dot"></i>${escHtml(x.name)}</button>`).join('')}</div>` : ''}
+        <div class="modal-btns">
+            <button class="btn btn-primary" onclick="saveImport()" ${n ? '' : 'disabled'}>Aggiungi alla lista (${n})</button>
+            <button class="btn btn-secondary" onclick="imp.step='paste';renderImport()">Modifica il testo</button>
+        </div>`;
+}
+function importRename(i, v){
+    const r = imp.rows[i]; v = String(v).trim();
+    if (!r || !v) return;
+    const it = findCatalogItem(v);
+    r.name = it ? it.name : v.charAt(0).toUpperCase() + v.slice(1);
+    const was = r.itemId;
+    r.itemId = it ? it.id : null;
+    if (it) r.catId = it.catId;
+    if (was !== r.itemId) renderImport();
+}
+function saveImport(){
+    const rows = imp.rows.filter(r => r.on);
+    if (!rows.length) return;
+    const sid = getShop(imp.shop) ? imp.shop : null, main = mainShopId();
+    let added = 0, marked = 0;
+    rows.forEach(r => {
+        let it = r.itemId ? data.shopItems.find(x => x.id === r.itemId) : findCatalogItem(r.name);
+        if (it) { it.need = true; if (r.qty) it.qty = r.qty; addShopToItem(it, sid); marked++; }
+        else {
+            data.shopItems.push({ id:uid(), catId:getShopCat(r.catId) ? r.catId : null, name:r.name, need:true, qty:r.qty || '',
+                shops:(sid && sid !== main) ? [sid] : [] });
+            added++;
+        }
+    });
+    save(); closeModal('modalImport');
+    ui.section = 'shop'; ui.shopFilter = 'need'; saveUi(); render();
+    showToast(`${rows.length} ${rows.length === 1 ? 'prodotto' : 'prodotti'} in lista` + (added ? `, ${added} ${added === 1 ? 'nuovo' : 'nuovi'}` : ''));
+}
+
 // ── Stampa / PDF ────────────────────────────────────────────────────────────
 function listTitleDate(){
     const d = new Date();
@@ -3212,10 +3815,10 @@ function printShopping(){
     if (!sections.length) { showToast('⚠ Spunta almeno un prodotto'); return; }
     const n = countNeeded(sections);
     $('printArea').innerHTML = `
-        <div class="p-title">Lista della spesa</div>
+        <div class="p-title">${escHtml(listTitle())}</div>
         <div class="p-meta">${escHtml(listTitleDate())}, ${n} ${n === 1 ? 'prodotto' : 'prodotti'}</div>
         <div class="p-cols">${sections.map(s => `<div class="p-sec"><h2>${escHtml(s.name)}</h2><ul>
-            ${s.items.map(i => `<li><span>${escHtml(i.name)}${i.qty ? ` <i>(${escHtml(i.qty)})</i>` : ''}</span></li>`).join('')}
+            ${s.items.map(i => `<li><span>${escHtml(i.name)}${i.qty ? ` <i>(${escHtml(i.qty)})</i>` : ''}${i.where ? ` <i>→ ${escHtml(i.where)}</i>` : ''}</span></li>`).join('')}
         </ul></div>`).join('')}</div>`;
     // piccolo ritardo: lascia al browser il tempo di impaginare l'area di stampa
     setTimeout(() => window.print(), 80);
@@ -3224,9 +3827,9 @@ function printShopping(){
 // ── Invia come messaggio (WhatsApp o altre app) ─────────────────────────────
 function shoppingText(sections){
     const d = new Date();
-    let txt = `🛒 *Lista della spesa* (${DOW_SHORT[d.getDay()].toLowerCase()} ${d.getDate()}/${d.getMonth() + 1})\n`;
+    let txt = `🛒 *${listTitle()}* (${DOW_SHORT[d.getDay()].toLowerCase()} ${d.getDate()}/${d.getMonth() + 1})\n`;
     sections.forEach(s => {
-        txt += `\n*${s.name}*\n` + s.items.map(i => `▢ ${i.name}${i.qty ? ` (${i.qty})` : ''}`).join('\n') + '\n';
+        txt += `\n*${s.name}*\n` + s.items.map(i => `▢ ${itemLabel(i)}`).join('\n') + '\n';
     });
     return txt.trim();
 }
@@ -3247,7 +3850,7 @@ function shareShopping(){
     const text = shoppingText(sections);
     // Sul telefono si apre il pannello di condivisione (WhatsApp, Telegram, email…)
     if (navigator.share) {
-        navigator.share({ title:'Lista della spesa', text }).catch(err => { if (err && err.name !== 'AbortError') openWhatsApp(text); });
+        navigator.share({ title:listTitle(), text }).catch(err => { if (err && err.name !== 'AbortError') openWhatsApp(text); });
     } else openWhatsApp(text);
 }
 
@@ -3265,9 +3868,9 @@ async function createShoppingDoc(){
     const d = new Date();
     const payload = {
         kind:'doc',
-        title:`Lista spesa ${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`,
+        title:`${getShop(activeShop()) ? 'Spesa ' + getShop(activeShop()).name : 'Lista spesa'} ${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`,
         subtitle:`${listTitleDate()}, ${countNeeded(sections)} prodotti`,
-        sections:sections.map(s => ({ name:s.name, items:s.items.map(i => i.name + (i.qty ? ` (${i.qty})` : '')) })),
+        sections:sections.map(s => ({ name:s.name, items:s.items.map(itemLabel) })),
     };
     try {
         const res = await fetch(`${syncUrl}?action=doc`, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' }, body:JSON.stringify(payload) });
@@ -3750,13 +4353,15 @@ function init(){
         m.addEventListener('pointerdown', e => { downOnBackdrop = e.target === m; });
         m.addEventListener('click', e => { if (e.target === m && downOnBackdrop) closeModal(m.id); });
     });
+    const shared = readSharedParams();
     render();
     resumeTimerState();
     updateSyncBtn(getSyncStatus());
+    if (shared) setTimeout(() => handleShared(shared), 150);
     if (_loadError) showToast('⚠ Dati locali illeggibili: copia salvata, ripristina da sync o backup');
     // Il check-in parte dopo la prima sync, così non lo rifai se l'hai già fatto sull'altro dispositivo
     initViewerGestures();
-    if (!ui.tourSeen) setTimeout(openTour, 300); // primo utilizzo: prima la guida, poi il check-in
+    if (!ui.tourSeen && !shared) setTimeout(openTour, 300); // primo utilizzo: prima la guida, poi il check-in
     if (syncUrl) setTimeout(async () => { await doSync(true); if (ui.tourSeen) maybeCheckin(); }, 1200);
     else if (ui.tourSeen) setTimeout(maybeCheckin, 400);
     setTimeout(gcPhotos, 8000);
